@@ -1,0 +1,11 @@
+{
+  "name": "雾港第二章事实矛盾",
+  "origin": "synthetic",
+  "purpose": "review",
+  "input": "请检查候选与前文、人物资料是否矛盾，列出依据和修订建议。不要直接修改正文，不把未来章纲当作既成事实。",
+  "candidate": "novel/矛盾候选.md",
+  "selectedSources": ["novel/存稿.md", "novel/人物.md"],
+  "excludedFutureSources": ["novel/章纲.md"],
+  "skill": "skills/continuity/SKILL.md",
+  "expectedObservations": ["左手与右手冲突", "铜铃保管人冲突", "区分未来规划与已发生事实"]
+}

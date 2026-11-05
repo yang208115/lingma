@@ -1,0 +1,64 @@
+[
+  [
+    {
+      "type": "response",
+      "response": {
+        "transcriptMessage": {
+          "role": "assistant",
+          "toolCalls": [
+            {
+              "id": "call-read-1",
+              "name": "read_document",
+              "arguments": {
+                "documentId": "11111111-1111-4111-8111-111111111111",
+                "versionId": "22222222-2222-4222-8222-222222222222"
+              }
+            }
+          ],
+          "content": ""
+        },
+        "text": "",
+        "calls": [
+          {
+            "id": "call-read-1",
+            "name": "read_document",
+            "arguments": {
+              "documentId": "11111111-1111-4111-8111-111111111111",
+              "versionId": "22222222-2222-4222-8222-222222222222"
+            }
+          }
+        ],
+        "stop": "tool_calls",
+        "usage": {
+          "inputTokens": null,
+          "outputTokens": null,
+          "cost": null
+        }
+      }
+    }
+  ],
+  [
+    {
+      "type": "text_delta",
+      "text": "候选存在惯用手与铜铃保管人的冲突。"
+    },
+    {
+      "type": "response",
+      "response": {
+        "transcriptMessage": {
+          "role": "assistant",
+          "content": "候选存在惯用手与铜铃保管人的冲突。",
+          "toolCalls": []
+        },
+        "text": "候选存在惯用手与铜铃保管人的冲突。",
+        "calls": [],
+        "stop": "complete",
+        "usage": {
+          "inputTokens": null,
+          "outputTokens": null,
+          "cost": null
+        }
+      }
+    }
+  ]
+]

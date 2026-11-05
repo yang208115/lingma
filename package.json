@@ -1,0 +1,35 @@
+{
+  "name": "lingma",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=22.19.0 <23",
+    "pnpm": "11.5.2"
+  },
+  "scripts": {
+    "data:clean": "pnpm --filter @lingma/server data:clean",
+    "dev": "pnpm --filter @lingma/shared build && pnpm --filter @lingma/agent build && concurrently -k -n shared,agent,server,web \"pnpm --filter @lingma/shared dev\" \"pnpm --filter @lingma/agent dev\" \"pnpm --filter @lingma/server dev\" \"pnpm --filter @lingma/web dev\"",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter @lingma/server start",
+    "typecheck": "pnpm --filter @lingma/shared build && pnpm --filter @lingma/agent build && pnpm -r typecheck && tsc --noEmit -p tsconfig.tools.json",
+    "lint": "biome check . && node scripts/check-boundaries.mjs",
+    "format": "biome check --write .",
+    "test": "pnpm --filter @lingma/shared build && pnpm --filter @lingma/agent build && vitest run",
+    "test:watch": "vitest",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:e2e": "playwright test",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "test:skill-git": "node scripts/skill-git-smoke.mjs",
+    "test:agent-smoke": "node scripts/agent-smoke.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.20.5",
+    "concurrently": "10.0.6",
+    "typescript": "5.9.3",
+    "vitest": "5.1.0"
+  }
+}
