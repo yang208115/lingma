@@ -11,6 +11,17 @@ export const skillLimits = {
   pathDepth: 16,
 } as const;
 export const skillSourceSchema = skillVersionSchema.shape.sourceSnapshot;
+export const skillScopeSchema = z.enum(['general', 'project']);
+export const skillScopeInputSchema = z.strictObject({
+  projectId: idSchema.nullable().default(null),
+});
+export const skillListFilterSchema = z
+  .object({ scope: skillScopeSchema.optional(), projectId: idSchema.optional() })
+  .refine((value) => value.scope !== 'project' || Boolean(value.projectId), {
+    message: '项目 Skill 必须指定项目',
+  });
+export const changeSkillScopeSchema = skillScopeInputSchema.extend({ baseVersionId: idSchema });
+export type SkillListFilter = z.infer<typeof skillListFilterSchema>;
 export const skillCatalogEntrySchema = z.strictObject({
   skillId: idSchema,
   versionId: idSchema,
@@ -23,6 +34,7 @@ export const skillSchema = z.strictObject({
   name: z.string().min(1).max(200),
   source: skillSourceSchema,
   currentVersionId: idSchema,
+  projectId: idSchema.nullable().default(null),
 });
 export const parsedSkillSchema = z.strictObject({
   body: z.string(),
@@ -64,11 +76,13 @@ export const gitImportSchema = z.strictObject({
   repository: gitRepositorySchema,
   subdir: z.union([z.literal(''), relativePathSchema]).default(''),
 });
+export const gitSkillImportSchema = gitImportSchema.extend(skillScopeInputSchema.shape);
 export const skillUpdateSchema = z.strictObject({ baseVersionId: idSchema });
 export const skillImportJobSchema = z.strictObject({
   id: idSchema,
   type: z.enum(['local', 'git']),
   skillId: idSchema.nullable(),
+  projectId: idSchema.nullable().default(null),
   baseVersionId: idSchema.nullable(),
   status: z.enum(['queued', 'fetching', 'publishing', 'completed', 'failed', 'interrupted']),
   source: skillSourceSchema,

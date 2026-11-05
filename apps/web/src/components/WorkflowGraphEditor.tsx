@@ -58,6 +58,7 @@ type CardNode = Node<
     agent: string;
     required: boolean;
     confirm?: boolean;
+    runStatus?: string;
   },
   'workflow'
 >;
@@ -73,14 +74,15 @@ function WorkflowNodeCard({ data, selected }: NodeProps<CardNode>) {
         : GitBranch;
   return (
     <div
-      className={`workflow-graph-node ${selected ? 'is-selected' : ''} ${system ? 'is-system' : ''}`}
+      className={`workflow-graph-node ${selected ? 'is-selected' : ''} ${system ? 'is-system' : ''}${data.runStatus ? ` run-${data.runStatus}` : ''}`}
       data-stage={data.stage}
+      data-run-status={data.runStatus}
     >
       {data.stage !== 'start' && data.stage !== 'revise' && (
         <Handle
           type="target"
           position={Position.Left}
-          isConnectable={!system && data.stage !== 'revise'}
+          isConnectable={!system}
           aria-label={`${data.label} 输入连接点`}
         />
       )}
@@ -111,7 +113,8 @@ function WorkflowNodeCard({ data, selected }: NodeProps<CardNode>) {
       <div className="workflow-node-caption">
         {isStep(data.stage) ? labels[data.stage] : data.agent}
         {data.stage === 'review' && ` · ${data.required ? '必需' : '可选'}`}
-        {data.confirm && ' · 等待作者确认'}
+        {data.confirm && ' · 手动放行'}
+        {data.runStatus && ` · ${runLabels[data.runStatus] ?? data.runStatus}`}
       </div>
       {!system && <div className="workflow-node-agent">{data.agent}</div>}
       {!['end', 'author'].includes(data.stage) && (
@@ -125,6 +128,19 @@ function WorkflowNodeCard({ data, selected }: NodeProps<CardNode>) {
     </div>
   );
 }
+const runLabels: Record<string, string> = {
+  pending: '待开始',
+  queued: '排队中',
+  running: '执行中',
+  awaiting_gate: '等待放行',
+  released: '已放行',
+  failed: '失败',
+  limited: '需调整',
+  interrupted: '已中断',
+  skipped: '已跳过',
+  stale: '已被替代',
+  cancelled: '已取消',
+};
 const nodeTypes = { workflow: WorkflowNodeCard };
 const startId = '__start';
 const endId = '__end';
@@ -167,10 +183,16 @@ export function WorkflowGraphEditor({
   config,
   profiles,
   onChange,
+  runStatus,
+  readOnly = false,
 }: {
   config: WorkflowTemplateConfig;
   profiles: AgentProfile[];
   onChange(config: WorkflowTemplateConfig): void;
+  /** Status of each template node in a live run, keyed by template key ("merge" for the system node). */
+  runStatus?: Record<string, string>;
+  /** Canvas only: no editing chrome, dragging or connecting. */
+  readOnly?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [flow, setFlow] = useState<ReactFlowInstance<CardNode> | null>(null);
@@ -222,7 +244,8 @@ export function WorkflowGraphEditor({
         label: s.name,
         stage: s.stage,
         required: s.required,
-        confirm: s.stage === 'plan' && config.confirmPlan,
+        confirm: s.gate === 'manual',
+        ...(runStatus?.[s.key] ? { runStatus: runStatus[s.key] } : {}),
         agent: versions.find((v) => v.id === s.agentVersionId)?.config.name ?? '请选择 Agent',
       },
     }));
@@ -244,7 +267,13 @@ export function WorkflowGraphEditor({
       deletable: false,
       draggable: false,
       selectable: false,
-      data: { label, stage, agent, required: true },
+      data: {
+        label,
+        stage,
+        agent,
+        required: true,
+        ...(stage === 'gate' && runStatus?.merge ? { runStatus: runStatus.merge } : {}),
+      },
     });
     generatedNodes.push(
       systemNode(startId, '开始', 'start', 0, 80, '创作要求与引用资料'),
@@ -395,6 +424,7 @@ export function WorkflowGraphEditor({
       name: stage === 'review' ? '新增审校' : `新增${labels[stage]}`,
       agentVersionId: versions.find((v) => v.config.capability === capability)?.id ?? '',
       required: true,
+      gate: 'auto',
       dependsOn: stage === 'revise' ? [] : parents,
     });
     onChange({ ...config, steps });
@@ -478,8 +508,18 @@ export function WorkflowGraphEditor({
           必须完成此审校
         </label>
       )}
+      <label>
+        放行方式
+        <select
+          value={step.gate}
+          onChange={(e) => update(step.key, { gate: e.target.value as 'auto' | 'manual' })}
+        >
+          <option value="auto">自动放行</option>
+          <option value="manual">手动放行（产出后等待作者查看）</option>
+        </select>
+      </label>
       {step.stage === 'revise' ? (
-        <p className="muted">审校发现重要问题时触发，修订完成后重新运行全部审校。</p>
+        <p className="muted">审校汇总后若有被采纳的意见则触发，修订完成后重新运行全部审校。</p>
       ) : (
         <>
           <h4>上游节点</h4>
@@ -572,6 +612,31 @@ export function WorkflowGraphEditor({
       </div>
     </fieldset>
   );
+  if (readOnly)
+    return (
+      <div className="workflow-graph-editor is-readonly">
+        <section className="workflow-graph-canvas" aria-label="运行流程图">
+          <ReactFlow<CardNode>
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            colorMode="dark"
+            fitView
+            fitViewOptions={readableView}
+            onInit={setFlow}
+            minZoom={0.2}
+            maxZoom={1.6}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable={false}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background gap={22} size={1} />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+        </section>
+      </div>
+    );
   return (
     <div className={`workflow-graph-editor ${expanded ? 'is-expanded' : ''}`}>
       <div className="workflow-graph-toolbar">

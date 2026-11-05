@@ -113,90 +113,25 @@ export async function startModelFixture(port = 4179) {
     } else if (task.workflowNode) {
       if (tools.length === 0) {
         const node = task.workflowNode;
-        const type = node.expectedType;
-        const payload =
-          type === 'chapter_plan'
-            ? { type, content: '林舟在雨夜检查来客的说辞，结尾留下铜铃线索。', openQuestions: [] }
-            : type === 'chapter_draft'
-              ? {
-                  type,
-                  title: '雨夜来客',
-                  content: '林舟用左手拨开窗栓。雨声里，来客的说辞露出了破绽。',
-                  notes: '已按章纲完成本章。',
-                }
-              : type === 'element_candidates'
-                ? {
-                    type,
-                    items: [
-                      {
-                        tempId: 'world-1',
-                        kind: 'worldbuilding',
-                        title: '雾港世界观',
-                        targetDocumentId: task.targetDocumentId ?? null,
-                        content: '海雾中的港城以记忆交换魔法。',
-                        data: {
-                          fields: {
-                            rules: '施法必须交出一段记忆',
-                            cost: '失去珍贵回忆',
-                            taboos: '不能复活死者',
-                          },
-                        },
-                        reason: '构建统一规则',
-                        openQuestions: [],
-                      },
-                    ],
-                  }
-                : type === 'master_outline_candidate'
-                  ? {
-                      type,
-                      title: '雾港故事总纲',
-                      content:
-                        '## 起点\n林舟在雾港遇到失忆的来客。\n## 转折\n来客发现魔法的代价。\n## 高潮与结局\n林舟付出记忆换回真相。',
-                      reason: '规划主线',
-                      citations: [],
-                    }
-                  : type === 'outline_event_batch'
-                    ? {
-                        type,
-                        items: [
-                          {
-                            title: '雨夜抵港',
-                            storyTime: '第一天',
-                            summary: '来客出现',
-                            content: '来客雨夜抵港，向林舟求助。',
-                          },
-                          {
-                            title: '记忆的代价',
-                            storyTime: '第二天',
-                            summary: '揭示规则',
-                            content: '林舟发现施法需要付出记忆。',
-                          },
-                        ],
-                        reason: '有序拆分主线',
-                        citations: [],
-                      }
-                    : type === 'analysis_note'
-                      ? { type, content: '保持限知视角，保留来客的秘密。', openQuestions: [] }
-                      : {
-                          type: 'review_report',
-                          reviewedArtifactId: node.reviewedArtifactId,
-                          domain: 'fixture',
-                          coverage: ['人物知识边界', '章节目标'],
-                          uncovered: [],
-                          issues: [],
-                        };
-        emit({
-          role: 'assistant',
-          tool_calls: [
-            {
-              index: 0,
-              id: 'fixture-workflow-submit',
-              type: 'function',
-              function: { name: 'submit_workflow_artifact', arguments: JSON.stringify(payload) },
-            },
-          ],
-        });
-        emit({}, 'tool_calls');
+        const draftText = '林舟用左手拨开窗栓。雨声里，来客的说辞露出了破绽。';
+        const text =
+          node.stage === 'plan'
+            ? '本章目标：林舟在雨夜检查来客的说辞，结尾留下铜铃线索。'
+            : node.stage === 'analysis'
+              ? '保持限知视角，保留来客的秘密。'
+              : node.stage === 'review'
+                ? '无重要问题'
+                : task.taskType === 'master_outline'
+                  ? '# 雾港故事总纲\n\n## 起点\n林舟在雾港遇到失忆的来客。\n## 转折\n来客发现魔法的代价。\n## 高潮与结局\n林舟付出记忆换回真相。'
+                  : task.taskType === 'story_events'
+                    ? '## 雨夜抵港\n时间：第一天\n概述：来客出现\n来客雨夜抵港，向林舟求助。\n\n## 记忆的代价\n时间：第二天\n概述：揭示规则\n林舟发现施法需要付出记忆。'
+                    : task.taskType === 'worldbuilding'
+                      ? '## [世界] 雾港世界观\n> 海雾中的港城以记忆交换魔法。\n规则与使用条件：施法必须交出一段记忆\n代价与限制：失去珍贵回忆\n禁忌：不能复活死者'
+                      : task.targetDocumentId
+                        ? draftText
+                        : `# 雨夜来客\n\n${draftText}`;
+        emit({ role: 'assistant', content: text });
+        emit({}, 'stop');
       } else {
         emit({ role: 'assistant', content: '本阶段产物已提交。' });
         emit({}, 'stop');

@@ -27,7 +27,12 @@ export type ActionHandlers = {
 export class ActionRegistry {
   private readonly handlers: Readonly<ActionHandlers>;
   readonly names: readonly ActionName[];
-  constructor(handlers: ActionHandlers) {
+  constructor(
+    handlers: ActionHandlers,
+    private readonly options: {
+      onInvalidArguments?: (call: ModelCall, context: ActionContext) => void;
+    } = {},
+  ) {
     for (const key of Object.keys(handlers))
       if (!actionNameSchema.safeParse(key).success) throw new AgentError('VALIDATION_ERROR');
     this.handlers = Object.freeze({ ...handlers });
@@ -47,22 +52,26 @@ export class ActionRegistry {
     if (!name.success) return fail('UNKNOWN_TOOL', '未知动作，请使用本次提供的动作定义');
     const handler = this.handlers[name.data];
     if (!handler) return fail('FORBIDDEN', '本次运行未授权此动作');
-    const parsed = actionSchemas[name.data].args.safeParse(call.arguments);
-    if (!parsed.success) {
-      const issues = parsed.error.issues.map((issue) => {
-        const path = issue.path.map(String).join('.') || '参数';
-        if (issue.code === 'unrecognized_keys')
-          return `${path}：请移除未定义字段 ${issue.keys.join('、')}。`;
-        return `${path}：${issue.message}`;
-      });
-      const hint =
-        name.data === 'propose_document_change'
-          ? '只提交 content（完整替换文本）、reason（修改理由）、citations（真实引用 ID 数组，无引用传 []）；目标、版本和范围已由服务端绑定。'
-          : '请修正上述字段后重试。';
-      return fail('VALIDATION_ERROR', `参数校验失败：${issues.join('；')} ${hint}`.slice(0, 4000));
-    }
     try {
       context.signal.throwIfAborted();
+      const parsed = actionSchemas[name.data].args.safeParse(call.arguments);
+      if (!parsed.success) {
+        this.options.onInvalidArguments?.(call, context);
+        const issues = parsed.error.issues.map((issue) => {
+          const path = issue.path.map(String).join('.') || '参数';
+          if (issue.code === 'unrecognized_keys')
+            return `${path}：请移除未定义字段 ${issue.keys.join('、')}。`;
+          return `${path}：${issue.message}`;
+        });
+        const hint =
+          name.data === 'propose_document_change'
+            ? '只提交 content（完整替换文本）、reason（修改理由）、citations（真实引用 ID 数组，无引用传 []）；目标、版本和范围已由服务端绑定。'
+            : '请修正上述字段后重试。';
+        return fail(
+          'VALIDATION_ERROR',
+          `参数校验失败：${issues.join('；')} ${hint}`.slice(0, 4000),
+        );
+      }
       // The name/schema pair is selected together from the fixed registry; no model-supplied code runs.
       const value = await (
         handler as (args: typeof parsed.data, context: ActionContext) => unknown
@@ -81,6 +90,9 @@ export class ActionRegistry {
           ok: false,
           error: {
             code: error.code,
+            ...(error instanceof ActionError && error.publicDetails !== undefined
+              ? { details: error.publicDetails }
+              : {}),
             message:
               error instanceof ActionError
                 ? error.publicMessage.slice(0, 4000)

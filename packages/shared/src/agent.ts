@@ -11,7 +11,11 @@ export const actionOutcomeSchema = z.discriminatedUnion('ok', [
   z.strictObject({
     callId: z.string().min(1),
     ok: z.literal(false),
-    error: z.strictObject({ code: errorCodeSchema, message: z.string().max(4000) }),
+    error: z.strictObject({
+      code: errorCodeSchema,
+      message: z.string().max(4000),
+      details: jsonSchema.optional(),
+    }),
   }),
 ]);
 export const assistantTranscriptSchema = z.strictObject({

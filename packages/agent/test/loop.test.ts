@@ -11,6 +11,7 @@ import {
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   type ActionContext,
+  ActionError,
   ActionRegistry,
   AgentError,
   FakeModelAdapter,
@@ -85,6 +86,45 @@ function setup(turns: (readonly ModelEvent[] | Error)[], overrides: Partial<Loop
   return { input, adapter, recorder, run: () => runLoop(input) };
 }
 afterEach(() => vi.useRealTimers());
+
+it('preserves structured validation feedback through model turns and checkpoints', async () => {
+  const handler = vi.fn(handlers().read_document);
+  const details = { draftId: runId, revision: 1, paths: [['versionId']] };
+  const registry = new ActionRegistry(
+    { read_document: handler },
+    {
+      onInvalidArguments: () => {
+        throw new ActionError('VALIDATION_ERROR', '请补齐指定字段', details);
+      },
+    },
+  );
+  const test = setup(
+    [[answer('', [call('missing', 'read_document', { documentId })])], [answer('收到缺失字段')]],
+    { registry },
+  );
+  expect((await test.run()).status).toBe('completed');
+  expect(handler).not.toHaveBeenCalled();
+  expect(test.adapter.requests[1]?.messages.at(-1)).toMatchObject({
+    role: 'toolResult',
+    result: { ok: false, error: { code: 'VALIDATION_ERROR', details } },
+  });
+  expect(test.recorder.turns[0]?.results[0]).toMatchObject({ ok: false, error: { details } });
+});
+
+it('never invokes argument recovery for unauthorized tools or cancelled actions', async () => {
+  const onInvalidArguments = vi.fn();
+  const registry = new ActionRegistry(handlers(), { onInvalidArguments });
+  const controller = new AbortController();
+  const context = { runId, turnIndex: 0, executionId: runId, signal: controller.signal };
+  expect(
+    await registry.execute(call('forbidden', 'propose_master_outline', {}), context),
+  ).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+  controller.abort();
+  await expect(
+    registry.execute(call('cancelled', 'read_document', {}), context),
+  ).rejects.toBeDefined();
+  expect(onInvalidArguments).not.toHaveBeenCalled();
+});
 
 it('preserves thinking streams without an application character cap', async () => {
   const thinking = '想'.repeat(1_000_001);

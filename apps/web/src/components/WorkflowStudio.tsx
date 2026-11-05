@@ -5,27 +5,20 @@ import {
   type Document,
   documentKindSchema,
   elementLabels,
-  orderedChapters,
   type ProviderConfig,
   type RunDetail,
   type Skill,
-  type WorkflowArtifactPayload,
-  type WorkflowDecision,
-  type WorkflowPreview,
-  type WorkflowRun,
   type WorkflowTemplate,
   type WorkflowTemplateConfig,
   workflowTemplateConfigSchema,
 } from '@lingma/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { api } from '../api.js';
 import { useLeaveGuard } from '../runtime.js';
 import { skillApi } from '../skill-api.js';
 import { workflowApi } from '../workflow-api.js';
 import { writingApi } from '../writing-api.js';
-import { AssistantWorkflowCard } from './AssistantWorkflows.js';
-import { DiffView } from './DiffView.js';
 import { WorkflowGraphEditor } from './WorkflowGraphEditor.js';
 
 const capabilities = {
@@ -62,21 +55,15 @@ export function WorkflowStudio({
   mode,
   document,
   beforeRun,
-  onApplied,
   onClose,
 }: {
   projectId: string;
-  mode: 'profiles' | 'templates' | 'runs';
+  mode: 'profiles' | 'templates';
   document: Document | undefined;
   beforeRun(): Promise<void>;
-  onApplied(id: string): Promise<void>;
   onClose(): void;
 }) {
   const tab = mode;
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requestedRun = searchParams.get('run') ?? '';
-  const requestedRunRef = useRef(requestedRun);
-  requestedRunRef.current = requestedRun;
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
@@ -88,50 +75,15 @@ export function WorkflowStudio({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [runs, setRuns] = useState<WorkflowRun[]>([]);
-  const [run, setRunState] = useState<WorkflowRun | null>(null);
-  const setRun = useCallback(
-    (value: WorkflowRun, replace = false) => {
-      if (value.projectId !== projectId) throw new Error('运行记录不属于当前作品');
-      setRunState(value);
-      if (mode === 'runs' && requestedRunRef.current !== value.id) {
-        requestedRunRef.current = value.id;
-        setSearchParams(
-          (previous) => {
-            const next = new URLSearchParams(previous);
-            next.set('run', value.id);
-            return next;
-          },
-          { replace },
-        );
-      }
-    },
-    [projectId, mode, setSearchParams],
-  );
-  const [templateVersionId, setTemplateVersionId] = useState('');
   const [providerId, setProviderId] = useState('');
-  const [task, setTask] = useState('');
-  const [preview, setPreview] = useState<WorkflowPreview | null>(null);
-  const [feedback, setFeedback] = useState('');
-  const [edited, setEdited] = useState('');
-  const [original, setOriginal] = useState<string | null>(null);
-  const [sources, setSources] = useState<Document[]>([]);
   const [trial, setTrial] = useState<{
     run: RunDetail;
-    artifact: WorkflowArtifactPayload | null;
+    artifact: string | null;
   } | null>(null);
-  const [allowed, setAllowed] = useState<string[]>([]);
-  const [pins, setPins] = useState<string[]>([]);
-  const [future, setFuture] = useState(false);
-  const selectedRun = useRef('');
-  const createKey = useRef<string>(crypto.randomUUID());
   const dirty =
     JSON.stringify(config) !== JSON.stringify(profile?.draft ?? freshProfile()) ||
     Boolean(templateConfig && JSON.stringify(templateConfig) !== JSON.stringify(template?.draft));
-  useLeaveGuard(
-    dirty || Boolean(edited) || Boolean(feedback),
-    '角色、模板或协作稿件有尚未保存的修改，离开将放弃这些编辑。',
-  );
+  useLeaveGuard(dirty, '角色或模板有尚未保存的修改，离开将放弃这些编辑。');
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
     setError('');
@@ -149,74 +101,20 @@ export function WorkflowStudio({
       workflowApi.profiles(),
       workflowApi.templates(),
       writingApi.providers(),
-      skillApi.list(),
+      skillApi.list(undefined, projectId ? { projectId } : {}),
     ]);
     setProfiles(p);
     setTemplates(t);
     setProviders(m.data);
     setSkills(s.data);
-  }, []);
+  }, [projectId]);
   useEffect(() => {
     void reload().catch((e) => setError(e.message));
   }, [reload]);
+  const templateVersionId = templates[0]?.versions[0]?.id ?? '';
   useEffect(() => {
-    if (!projectId) return;
-    let alive = true;
-    void Promise.all([workflowApi.runs(projectId), api.structure(projectId)])
-      .then(([r, s]) => {
-        if (!alive) return;
-        setRuns(r);
-        setSources([...orderedChapters(s), ...s.documents.filter((d) => d.kind !== 'chapter')]);
-        setAllowed(s.documents.map((d) => d.currentVersionId));
-        if (r[0] && !requestedRunRef.current && mode === 'runs') {
-          setRun(r[0], true);
-          selectedRun.current = r[0].id;
-        }
-      })
-      .catch((e) => {
-        if (alive) setError(e.message);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [projectId, mode, setRun]);
-  useEffect(() => {
-    if (mode !== 'runs' || !requestedRun) return;
-    setError('');
-    let live = true;
-    setRunState(null);
-    void workflowApi
-      .run(requestedRun)
-      .then((value) => {
-        if (!live) return;
-        if (value.projectId !== projectId) {
-          setError('运行记录不属于当前作品');
-          return;
-        }
-        setRunState(value);
-        selectedRun.current = value.id;
-      })
-      .catch((e: Error) => {
-        if (live) setError(e.message);
-      });
-    return () => {
-      live = false;
-    };
-  }, [requestedRun, projectId, mode]);
-  useEffect(() => {
-    if (!templateVersionId && templates[0]?.versions[0])
-      setTemplateVersionId(templates[0].versions[0].id);
     if (!providerId && providers[0]) setProviderId(providers[0].id);
-  }, [templates, providers, templateVersionId, providerId]);
-  const runId = run?.id ?? '';
-  const trackRun = !['completed', 'cancelled'].includes(run?.status ?? '');
-  const draftEditKey = `${runId}:${run?.latestDraftId ?? ''}:${run?.snapshot.input.baseVersionId ?? ''}`;
-  useEffect(() => {
-    if (draftEditKey) {
-      setEdited('');
-      setOriginal(null);
-    }
-  }, [draftEditKey]);
+  }, [providers, providerId]);
   const trialId = trial?.run.id ?? '';
   useEffect(() => {
     if (!trialId) return;
@@ -246,54 +144,6 @@ export function WorkflowStudio({
       source.close();
     };
   }, [trialId]);
-  useEffect(() => {
-    if (!runId || !trackRun) return;
-    selectedRun.current = runId;
-    const id = runId;
-    let alive = true;
-    let inFlight = false;
-    const refresh = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const latest = await workflowApi.run(id);
-        if (alive && selectedRun.current === id) {
-          setRun(latest);
-          setRuns((old) => [latest, ...old.filter((r) => r.id !== id)]);
-        }
-      } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : '刷新失败');
-      } finally {
-        inFlight = false;
-      }
-    };
-    const stream = new EventSource(`/api/v1/workflows/${id}/events`);
-    stream.addEventListener('change', () => {
-      void refresh();
-    });
-    const timer = window.setInterval(() => {
-      if (!window.document.hidden) void refresh();
-    }, 5000);
-    return () => {
-      alive = false;
-      stream.close();
-      window.clearInterval(timer);
-    };
-  }, [runId, trackRun, setRun]);
-  const previewInputs = JSON.stringify({
-    templateVersionId,
-    providerId,
-    task,
-    allowed,
-    pins,
-    future,
-  });
-  useEffect(() => {
-    if (previewInputs) {
-      setPreview(null);
-      createKey.current = crypto.randomUUID();
-    }
-  }, [previewInputs]);
   const discard = () => !dirty || window.confirm('有未保存的角色或模板配置，确定放弃这些编辑？');
   const chooseProfile = (p: AgentProfile | null) => {
     if (!discard()) return;
@@ -323,32 +173,13 @@ export function WorkflowStudio({
     await reload();
     return t;
   };
-  const decide = async (action: WorkflowDecision['action'], content?: string) => {
-    if (!run) return;
-    const result = await workflowApi.decide(
-      run.id,
-      { expectedRevision: run.revision, action, content, feedback },
-      crypto.randomUUID(),
-    );
-    setRun(result);
-    setFeedback('');
-    if (action === 'confirm_plan') setEdited('');
-  };
-  const draft = run?.artifacts.find((a) => a.id === run.latestDraftId);
-  const plan = [...(run?.artifacts ?? [])].reverse().find((a) => a.payload.type === 'chapter_plan');
   return (
     <section>
       <div className="dialog workflow-studio">
         <header className="dialog-heading">
           <div>
             <p className="eyebrow">协作创作</p>
-            <h2 id="workflow-title">
-              {mode === 'profiles'
-                ? 'Agent 角色库'
-                : mode === 'templates'
-                  ? '工作流模板'
-                  : '协作写作'}
-            </h2>
+            <h2 id="workflow-title">{mode === 'profiles' ? 'Agent 角色库' : '工作流模板'}</h2>
           </div>
           <button
             type="button"
@@ -364,7 +195,6 @@ export function WorkflowStudio({
             [
               ['profiles', 'Agent 角色库'],
               ['templates', '工作流模板'],
-              ['runs', '协作写作'],
             ] as const
           ).map(([id, label]) => (
             <Link
@@ -373,11 +203,7 @@ export function WorkflowStudio({
               to={
                 id === 'profiles'
                   ? `/agents${projectId ? `?${new URLSearchParams({ project: projectId, ...(document ? { document: document.id } : {}) })}` : ''}`
-                  : id === 'templates'
-                    ? `/workflow-templates${projectId ? `?${new URLSearchParams({ project: projectId, ...(document ? { document: document.id } : {}) })}` : ''}`
-                    : projectId
-                      ? `/projects/${projectId}/workflows${document ? `?${new URLSearchParams({ document: document.id })}` : ''}`
-                      : '/projects'
+                  : `/workflow-templates${projectId ? `?${new URLSearchParams({ project: projectId, ...(document ? { document: document.id } : {}) })}` : ''}`
               }
             >
               {label}
@@ -532,7 +358,7 @@ export function WorkflowStudio({
               <fieldset>
                 <legend>Skill 版本</legend>
                 {skills.length === 0 && (
-                  <p className="muted">先通过 Skill 管理导入方法与参考资料。</p>
+                  <p className="muted">先通过通用 Skill 或项目 Skill 导入方法与参考资料。</p>
                 )}
                 {skills.map((s) => (
                   <label className="checkbox" key={s.id}>
@@ -548,7 +374,7 @@ export function WorkflowStudio({
                         })
                       }
                     />
-                    {s.name}
+                    {s.name} · {s.projectId ? '项目 Skill' : '通用 Skill'}
                   </label>
                 ))}
                 {config.skillVersionIds
@@ -586,7 +412,7 @@ export function WorkflowStudio({
                           baseVersionId: current.version.id,
                           templateVersionId,
                           providerConfigId: providerId,
-                          input: task.trim() || '按角色职责处理当前章节，提交完整结构化产物。',
+                          input: '按角色职责处理当前章节，提交完整结构化产物。',
                           selectedVersionIds: [],
                           allowFutureOutline: false,
                         }),
@@ -663,7 +489,7 @@ export function WorkflowStudio({
                   <p>使用当前章节和本次默认模型，不产生正式文档提议。</p>
                   <pre>
                     {trial.artifact
-                      ? JSON.stringify(trial.artifact, null, 2)
+                      ? trial.artifact
                       : trial.run.output?.text || trial.run.stopReason || '模型处理中…'}
                   </pre>
                   {['queued', 'running'].includes(trial.run.status) && (
@@ -746,6 +572,7 @@ export function WorkflowStudio({
                         }
                       >
                         <option value="chapter_write">正文写作</option>
+                        <option value="basic_information">基础信息</option>
                         <option value="worldbuilding">世界观生成</option>
                         <option value="master_outline">故事总纲</option>
                         <option value="story_events">事件规划</option>
@@ -761,22 +588,25 @@ export function WorkflowStudio({
                   <label className="checkbox">
                     <input
                       type="checkbox"
-                      checked={templateConfig.confirmPlan}
-                      onChange={(e) =>
-                        setTemplateConfig({ ...templateConfig, confirmPlan: e.target.checked })
-                      }
-                    />
-                    生成章纲后等待作者确认
-                  </label>
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
                       checked={templateConfig.autoRevise}
                       onChange={(e) =>
                         setTemplateConfig({ ...templateConfig, autoRevise: e.target.checked })
                       }
                     />
                     自动修订并复审，直到重要问题解决
+                  </label>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={templateConfig.adoptionGate === 'manual'}
+                      onChange={(e) =>
+                        setTemplateConfig({
+                          ...templateConfig,
+                          adoptionGate: e.target.checked ? 'manual' : 'auto',
+                        })
+                      }
+                    />
+                    审校汇总后等待作者采纳意见
                   </label>
                   <div className="workflow-actions">
                     <button
@@ -825,562 +655,6 @@ export function WorkflowStudio({
               )}
             </section>
           </div>
-        )}
-        {tab === 'runs' && (
-          <section aria-label="协作写作工作台">
-            {!projectId ? (
-              <p>请先打开作品和目标章节。</p>
-            ) : (
-              <>
-                <details open={!run}>
-                  <summary>启动新的协作写作</summary>
-                  <p>
-                    目标：
-                    {document?.kind === 'chapter' ? document.title : '请在正文工作区选择一个章节'}
-                  </p>
-                  <label>
-                    模板发布版本
-                    <select
-                      aria-label="模板发布版本"
-                      value={templateVersionId}
-                      onChange={(e) => setTemplateVersionId(e.target.value)}
-                    >
-                      <option value="">选择模板版本</option>
-                      {templates.flatMap((t) =>
-                        t.versions.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.config.name} · v{v.versionNo}
-                          </option>
-                        )),
-                      )}
-                    </select>
-                  </label>
-                  <label>
-                    默认模型
-                    <select
-                      aria-label="默认模型"
-                      value={providerId}
-                      onChange={(e) => setProviderId(e.target.value)}
-                    >
-                      <option value="">选择模型配置</option>
-                      {providers.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.config.name} · {p.config.modelId}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    本章创作要求
-                    <textarea
-                      aria-label="本章创作要求"
-                      rows={4}
-                      maxLength={32000}
-                      value={task}
-                      onChange={(e) => setTask(e.target.value)}
-                      placeholder="视角、篇幅、冲突、必写内容与禁止事项…"
-                    />
-                  </label>
-                  <details>
-                    <summary>资料授权与固定全文</summary>
-                    <label className="checkbox">
-                      <input
-                        type="checkbox"
-                        checked={future}
-                        onChange={(e) => setFuture(e.target.checked)}
-                      />
-                      允许未来规划（章纲、事件、伏笔等）
-                    </label>
-                    {sources.map((d) => (
-                      <div key={d.id} className="context-choice">
-                        <label className="checkbox">
-                          <input
-                            type="checkbox"
-                            checked={d.id === document?.id || allowed.includes(d.currentVersionId)}
-                            disabled={d.id === document?.id}
-                            onChange={(e) => {
-                              setAllowed((old) =>
-                                e.target.checked
-                                  ? [...old, d.currentVersionId]
-                                  : old.filter((x) => x !== d.currentVersionId),
-                              );
-                              if (!e.target.checked)
-                                setPins((old) => old.filter((x) => x !== d.currentVersionId));
-                            }}
-                          />
-                          {d.title}
-                        </label>
-                        <label className="checkbox">
-                          <input
-                            type="checkbox"
-                            checked={pins.includes(d.currentVersionId)}
-                            disabled={!allowed.includes(d.currentVersionId)}
-                            onChange={(e) =>
-                              setPins((old) =>
-                                e.target.checked
-                                  ? [...old, d.currentVersionId]
-                                  : old.filter((x) => x !== d.currentVersionId),
-                              )
-                            }
-                          />
-                          固定全文
-                        </label>
-                      </div>
-                    ))}
-                  </details>
-                  <button
-                    type="button"
-                    disabled={
-                      busy ||
-                      !task.trim() ||
-                      !providerId ||
-                      !templateVersionId ||
-                      document?.kind !== 'chapter'
-                    }
-                    onClick={() =>
-                      void act(async () => {
-                        await beforeRun();
-                        if (!document) throw new Error('请选择章节');
-                        const current = await api.document(document.id);
-                        const latest = await api.structure(projectId);
-                        const chapterOrder = orderedChapters(latest).map((d) => d.id);
-                        const targetIndex = chapterOrder.indexOf(document.id);
-                        const allowedDocuments = new Set(
-                          sources
-                            .filter((d) => allowed.includes(d.currentVersionId))
-                            .map((d) => d.id),
-                        );
-                        const pinnedDocuments = new Set(
-                          sources.filter((d) => pins.includes(d.currentVersionId)).map((d) => d.id),
-                        );
-                        const safe = latest.documents.filter((d) => {
-                          if (d.id === document.id || !allowedDocuments.has(d.id)) return false;
-                          const index = chapterOrder.indexOf(
-                            d.kind === 'chapter' ? d.id : (d.chapterId ?? ''),
-                          );
-                          if (d.kind === 'chapter' && index > targetIndex) return false;
-                          if (
-                            d.kind === 'chapter_outline' &&
-                            !future &&
-                            (!d.chapterId || index > targetIndex)
-                          )
-                            return false;
-                          return true;
-                        });
-                        const p = await workflowApi.preview({
-                          projectId,
-                          targetDocumentId: document.id,
-                          baseVersionId: current.version.id,
-                          templateVersionId,
-                          providerConfigId: providerId,
-                          input: task,
-                          selectedVersionIds: safe
-                            .filter((d) => pinnedDocuments.has(d.id))
-                            .map((d) => d.currentVersionId),
-                          allowedVersionIds: [
-                            current.version.id,
-                            ...safe.map((d) => d.currentVersionId),
-                          ],
-                          allowFutureOutline: future,
-                        });
-                        setPreview(p);
-                      })
-                    }
-                  >
-                    保存并预览流程
-                  </button>
-                  {preview && (
-                    <div className="context-preview">
-                      <p>
-                        流程包含 {preview.template.config.steps.length} 个阶段，模型按需调用工具。
-                      </p>
-                      {preview.profiles.map((p) => (
-                        <p key={p.id}>
-                          {p.config.name} · {preview.contexts[p.id]?.request.modelId} · 输入估算{' '}
-                          {preview.contexts[p.id]?.estimatedInputTokens} Token
-                        </p>
-                      ))}
-                      {preview.warnings.map((w) => (
-                        <p key={w}>{w}</p>
-                      ))}
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={busy}
-                        onClick={() =>
-                          void act(async () => {
-                            await beforeRun();
-                            const w = await workflowApi.create(
-                              { ...preview.input, expectedPreviewHash: preview.hash },
-                              createKey.current,
-                            );
-                            setRun(w);
-                            setRuns((old) => [w, ...old.filter((r) => r.id !== w.id)]);
-                            setPreview(null);
-                          })
-                        }
-                      >
-                        开始协作写作
-                      </button>
-                    </div>
-                  )}
-                </details>
-                <label>
-                  协作运行记录
-                  <select
-                    aria-label="协作运行记录"
-                    value={run?.id ?? ''}
-                    onChange={(e) =>
-                      void act(async () => {
-                        setSearchParams((previous) => {
-                          const next = new URLSearchParams(previous);
-                          if (e.target.value) next.set('run', e.target.value);
-                          else next.delete('run');
-                          return next;
-                        });
-                      })
-                    }
-                  >
-                    <option value="">选择运行记录</option>
-                    {runs.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {statuses[r.status]} · {r.snapshot.template.config.name} ·{' '}
-                        {new Date(r.createdAt).toLocaleString()}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {run &&
-                  (run.snapshot.input.taskType !== 'chapter_write' || !run.targetDocumentId) && (
-                    <AssistantWorkflowCard
-                      run={run}
-                      onChange={setRun}
-                      beforeAccept={beforeRun}
-                      onSaved={async (ids) => {
-                        if (ids[0]) await onApplied(ids[0]);
-                      }}
-                    />
-                  )}
-                {run && run.snapshot.input.taskType === 'chapter_write' && run.targetDocumentId && (
-                  <>
-                    <h3>{statuses[run.status]}</h3>
-                    <p role="status">{run.reason}</p>
-                    <p>
-                      模型调用 {run.modelCalls} 次 · 输入 {run.usage.known.inputTokens ?? '未知'} /
-                      输出 {run.usage.known.outputTokens ?? '未知'} Token · 费用{' '}
-                      {run.usageByCurrency.length
-                        ? run.usageByCurrency
-                            .map(
-                              (c) =>
-                                `${c.amount} ${c.currency}${c.source === 'estimate' ? '（估算）' : ''}`,
-                            )
-                            .join('；')
-                        : '未知'}
-                      {!run.usage.complete ? ' · 统计不完整' : ''}
-                    </p>
-                    {run.sourceChanges.length > 0 &&
-                      !['completed', 'cancelled'].includes(run.status) && (
-                        <section aria-label="资料版本变化">
-                          <p className="error">
-                            运行后资料已有变化：{run.sourceChanges.join('、')}。
-                            {run.sourceSnapshotAccepted
-                              ? '已明确选择沿用冻结资料；正文基准仍需一致。'
-                              : '接受前请选择资料处理方式。'}
-                          </p>
-                          {['awaiting_input', 'awaiting_acceptance', 'paused'].includes(
-                            run.status,
-                          ) && (
-                            <div className="workflow-actions">
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={() => void act(() => decide('use_snapshot'))}
-                              >
-                                明确沿用冻结资料
-                              </button>
-                              {run.latestDraftId && (
-                                <button
-                                  type="button"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    void act(async () => {
-                                      await beforeRun();
-                                      setRun(
-                                        await workflowApi.refreshSources(
-                                          run.id,
-                                          run.revision,
-                                          edited.trim() ? edited : undefined,
-                                        ),
-                                      );
-                                      setEdited('');
-                                    })
-                                  }
-                                >
-                                  刷新资料并复审当前稿
-                                </button>
-                              )}
-                            </div>
-                          )}
-                          <p className="muted">
-                            若正文也已修改，请在下方填写合并后的完整稿，再刷新资料复审。
-                          </p>
-                        </section>
-                      )}
-                    <ol className="workflow-progress">
-                      {run.nodes.map((n) => (
-                        <li key={n.key}>
-                          <strong>{n.name}</strong>
-                          <span>{statuses[n.status]}</span>
-                          {n.error && <p className="error">{n.error}</p>}
-                          {n.runIds.length > 0 && (
-                            <details>
-                              <summary>执行记录（{n.runIds.length} 次尝试）</summary>
-                              {n.runIds.map((id) => (
-                                <button
-                                  key={id}
-                                  type="button"
-                                  onClick={() =>
-                                    void act(async () => {
-                                      const r = await writingApi.run(id);
-                                      setNotice(r.output?.text || r.stopReason || '任务执行中');
-                                    })
-                                  }
-                                >
-                                  查看本次模型输出
-                                </button>
-                              ))}
-                            </details>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                    <div className="workflow-actions">
-                      {['queued', 'running'].includes(run.status) && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void act(() => decide('pause'))}
-                        >
-                          节点结束后暂停
-                        </button>
-                      )}
-                      {['paused', 'interrupted', 'failed', 'limited'].includes(run.status) && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void act(() => decide('resume'))}
-                        >
-                          恢复 / 重试当前节点
-                        </button>
-                      )}
-                      {!['completed', 'cancelled'].includes(run.status) && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void act(() => decide('cancel'))}
-                        >
-                          结束并释放作品
-                        </button>
-                      )}
-                    </div>
-                    {run.status === 'awaiting_input' && (
-                      <>
-                        <label>
-                          处理意见
-                          <textarea
-                            aria-label="处理意见"
-                            rows={3}
-                            value={feedback}
-                            maxLength={8000}
-                            onChange={(e) => setFeedback(e.target.value)}
-                          />
-                        </label>
-                        {!run.planConfirmed && plan && plan.payload.type === 'chapter_plan' ? (
-                          <>
-                            <pre className="workflow-prose">{plan.payload.content}</pre>
-                            <label>
-                              修改章纲（留空则采用原稿）
-                              <textarea
-                                aria-label="修改章纲（留空则采用原稿）"
-                                rows={5}
-                                value={edited}
-                                onChange={(e) => setEdited(e.target.value)}
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                void act(() => decide('confirm_plan', edited || undefined))
-                              }
-                            >
-                              确认章纲并继续
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              disabled={busy || !feedback.trim()}
-                              onClick={() => void act(() => decide('continue'))}
-                            >
-                              提交意见并继续
-                            </button>
-                            {run.latestDraftId && (
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={() => void act(() => decide('use_candidate'))}
-                              >
-                                明确使用当前完整候选
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </>
-                    )}
-                    {draft && draft.payload.type === 'chapter_draft' && (
-                      <section aria-label="工作流正文候选">
-                        <h3>当前完整候选</h3>
-                        <pre className="workflow-prose">{draft.payload.content}</pre>
-                        {['awaiting_input', 'awaiting_acceptance'].includes(run.status) && (
-                          <>
-                            <label>
-                              编辑候选后重新审校
-                              <textarea
-                                aria-label="编辑候选后重新审校"
-                                rows={8}
-                                value={edited}
-                                maxLength={1000000}
-                                onChange={(e) => setEdited(e.target.value)}
-                                placeholder="填写完整的新稿…"
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              disabled={busy || !edited.trim()}
-                              onClick={() => void act(() => decide('edit_candidate', edited))}
-                            >
-                              提交完整新稿并复审
-                            </button>
-                          </>
-                        )}
-                      </section>
-                    )}
-                    {run.artifacts
-                      .filter((a) => a.payload.type === 'review_report')
-                      .map((a) => (
-                        <details
-                          key={a.id}
-                          open={
-                            a.payload.type === 'review_report' &&
-                            a.payload.reviewedArtifactId === run.latestDraftId
-                          }
-                        >
-                          <summary>
-                            {run.nodes.find((n) => n.key === a.nodeKey)?.name} ·{' '}
-                            {a.payload.type === 'review_report' &&
-                            a.payload.reviewedArtifactId === run.latestDraftId
-                              ? '当前稿'
-                              : '历史稿'}
-                            审校
-                          </summary>
-                          {a.payload.type === 'review_report' && (
-                            <>
-                              <p>范围：{a.payload.coverage.join('、')}</p>
-                              {[...new Set(a.payload.uncovered)].map((s) => (
-                                <p key={s}>未覆盖：{s}</p>
-                              ))}
-                              {a.payload.issues.length === 0 && <p>本次未发现问题。</p>}
-                              {a.payload.issues.map((i) => (
-                                <article key={i.id} className="review-issue">
-                                  <strong>
-                                    {i.severity} · {i.description}
-                                  </strong>
-                                  <blockquote>{i.quote}</blockquote>
-                                  <p>{i.suggestion}</p>
-                                </article>
-                              ))}
-                            </>
-                          )}
-                        </details>
-                      ))}
-                    {run.proposal && (
-                      <section aria-label="工作流最终提议">
-                        <h3>最终提议 · {run.proposal.status}</h3>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() =>
-                            void act(async () => {
-                              if (!run.proposal) return;
-                              setOriginal(
-                                (
-                                  await api.version(
-                                    run.proposal.targetDocumentId,
-                                    run.proposal.baseVersionId,
-                                  )
-                                ).content,
-                              );
-                            })
-                          }
-                        >
-                          比较候选与原文
-                        </button>
-                        {original !== null && (
-                          <DiffView before={original} after={run.proposal.content} />
-                        )}
-                        <div className="workflow-actions">
-                          {run.proposal.status === 'pending' && (
-                            <button
-                              type="button"
-                              className="primary"
-                              disabled={busy}
-                              onClick={() =>
-                                void act(async () => {
-                                  if (!run.proposal) return;
-                                  await beforeRun();
-                                  await writingApi.accept(run.proposal.id, crypto.randomUUID());
-                                  if (run.targetDocumentId) await onApplied(run.targetDocumentId);
-                                  setRun(await workflowApi.run(run.id));
-                                })
-                              }
-                            >
-                              接受最终稿并保存正文
-                            </button>
-                          )}
-                          {['pending', 'stale'].includes(run.proposal.status) && (
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() => void act(() => decide('reject'))}
-                            >
-                              拒绝并结束
-                            </button>
-                          )}
-                        </div>
-                        {run.proposal.status === 'stale' && (
-                          <p className="error">
-                            正文基准已变化，请保留候选，合并后基于最新正文新建流程。
-                          </p>
-                        )}
-                      </section>
-                    )}
-                    <details>
-                      <summary>全部产物与冻结配置</summary>
-                      <pre>
-                        {JSON.stringify(
-                          { snapshot: run.snapshot, artifacts: run.artifacts },
-                          null,
-                          2,
-                        )}
-                      </pre>
-                    </details>
-                  </>
-                )}
-              </>
-            )}
-          </section>
         )}
       </div>
     </section>

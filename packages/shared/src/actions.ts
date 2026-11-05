@@ -12,7 +12,6 @@ import {
   chapterOutlineCreationSchema,
   masterOutlineCreationSchema,
 } from './outlines.js';
-import { workflowArtifactPayloadSchema } from './workflow-artifacts.js';
 
 const rangeSchema = z
   .strictObject({ from: z.int().nonnegative(), to: z.int().positive() })
@@ -58,10 +57,6 @@ export const actionSchemas = {
       chapterCount: z.int().positive(),
       status: z.literal('staged'),
     }),
-  },
-  submit_workflow_artifact: {
-    args: workflowArtifactPayloadSchema,
-    result: z.strictObject({ artifactId: idSchema, status: z.literal('staged') }),
   },
   load_skill: {
     args: z.strictObject({ versionId: idSchema }),
@@ -127,7 +122,6 @@ export const actionNameSchema = z.enum([
   'propose_chapter_creation',
   'propose_master_outline',
   'propose_chapter_outlines',
-  'submit_workflow_artifact',
   'load_skill',
   'read_skill_file',
   'search_documents',
@@ -149,11 +143,6 @@ export const actionCallSchema = z.discriminatedUnion('name', [
     callId: z.string().min(1),
     name: z.literal('propose_chapter_outlines'),
     args: chapterOutlineCreationSchema,
-  }),
-  z.strictObject({
-    callId: z.string().min(1),
-    name: z.literal('submit_workflow_artifact'),
-    args: workflowArtifactPayloadSchema,
   }),
   z.strictObject({
     callId: z.string().min(1),
@@ -184,7 +173,11 @@ export const actionCallSchema = z.discriminatedUnion('name', [
 export const toolErrorSchema = z.strictObject({
   callId: z.string().min(1),
   ok: z.literal(false),
-  error: z.strictObject({ code: errorCodeSchema, message: z.string() }),
+  error: z.strictObject({
+    code: errorCodeSchema,
+    message: z.string(),
+    details: jsonSchema.optional(),
+  }),
 });
 
 export const actionDescriptions: Record<ActionName, string> = {
@@ -194,8 +187,6 @@ export const actionDescriptions: Record<ActionName, string> = {
     '为当前作品生成一份完整的故事总纲候选，提供 title、content、reason、citations，涵盖故事起点、主线推进、人物弧线、主要转折、高潮与结局。无需先选中文档或创建正文；作者确认后新建为故事总纲（master_outline），不会自动覆盖已有总纲。修改当前已有总纲请使用 propose_document_change；拆分故事事件请使用 propose_chapter_outlines。',
   propose_chapter_outlines:
     '为当前作品提出故事时间线的大事件候选，items 按故事实际发生顺序排列，每个事件提供 title、content 完整大纲，可提供 storyTime（自由文本时间）和 summary（简短概述）；一次最多 30 个事件。一个事件可以跨多个章节，不按一章一个事件拆分。只建立待作者确认的候选，不创建正文、不覆盖现有大纲。',
-  submit_workflow_artifact:
-    '提交本节点的完整结构化产物，不修改正式文档。只提交一次最终产物，审校必须引用给定的稿件产物 ID。',
   load_skill:
     '按可用 Skill 目录的 versionId 加载完整 SKILL.md、附件路径及诊断信息；先读取再遵循其中的任务指导，可按需加载多个 Skill。',
   read_skill_file:

@@ -1,4 +1,9 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
+
+async function chooseWorkflow(page: Page, name: string) {
+  await page.getByRole('button', { name: '执行方式', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: `${name} v1`, exact: true }).click();
+}
 
 test('creates a custom Agent, adds it to a template, resumes the chapter flow after reload and accepts the final draft', async ({
   page,
@@ -78,34 +83,85 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   await last.getByRole('button', { name: '上移', exact: true }).click();
   await dialog.getByRole('button', { name: '保存并发布模板', exact: true }).click();
   await expect(dialog.getByRole('status').filter({ hasText: '模板已发布' })).toBeVisible();
-  await dialog.getByRole('link', { name: '协作写作', exact: true }).click();
-  await dialog
-    .getByLabel('模板发布版本', { exact: true })
-    .selectOption({ label: `${templateName} · v1` });
-  await dialog.getByLabel('默认模型', { exact: true }).selectOption(provider.id);
-  await dialog
-    .getByLabel('本章创作要求', { exact: true })
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByLabel('写作模型', { exact: true }).selectOption(provider.id);
+  await chooseWorkflow(page, templateName);
+  await page
+    .getByLabel('写作任务', { exact: true })
     .fill('写雨夜来客一章，林舟惯用左手，保留铜铃伏笔。');
-  await dialog.getByRole('button', { name: '保存并预览流程', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: '开始协作写作', exact: true })).toBeVisible();
-  await dialog.getByRole('button', { name: '开始协作写作', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: '确认章纲并继续', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  const card = page.getByRole('article', { name: '编排运行', exact: true }).last();
+  await expect(card.getByRole('button', { name: '采用并保存正文写作', exact: true })).toBeVisible();
+  await expect(card.locator('.assistant-workflow-stages')).toContainText('自定义伏笔检查');
+  await expect(card.locator('.assistant-workflow-stages')).toContainText('审校汇总');
+  const runs = (await (await request.get(`/api/v1/workflows?projectId=${project.id}`)).json()).data;
+  const started = runs.find(
+    (run: { snapshot: { template: { config: { name: string } } } }) =>
+      run.snapshot.template.config.name === templateName,
+  );
+  // Opening a bookmarked run also restores its conversation in a fresh tab state.
+  await page.evaluate(() => sessionStorage.clear());
+  await page.goto(`/projects/${project.id}/workflows?run=${started.id}`);
+  await expect(page).toHaveURL(
+    `/projects/${project.id}/writing?workflow=${started.id}&document=${chapter.document.id}`,
+  );
+  await expect(card.getByRole('button', { name: '采用并保存正文写作', exact: true })).toBeVisible();
   await page.reload();
-  await expect(dialog.getByRole('button', { name: '确认章纲并继续', exact: true })).toBeVisible();
-  await dialog.getByRole('button', { name: '确认章纲并继续', exact: true }).click();
-  await expect(
-    dialog.getByRole('button', { name: '接受最终稿并保存正文', exact: true }),
-  ).toBeVisible();
-  await expect(dialog.locator('.workflow-progress')).toContainText('自定义伏笔检查');
+  await expect(card.getByRole('button', { name: '采用并保存正文写作', exact: true })).toBeVisible();
+  // The run graph colours each node by its live status.
+  await card.getByText('流程图（节点状态）', { exact: true }).click();
+  await expect(card.locator('.workflow-graph-node.run-released').first()).toBeVisible();
+  await card.getByText('流程图（节点状态）', { exact: true }).click();
+  // Every node's returned content is readable without leaving the card.
+  await card.getByText('查看返回内容', { exact: false }).first().click();
+  await expect(card.locator('.workflow-plan-box').first()).toBeVisible();
+  await card.getByText('用量', { exact: true }).click();
+  await expect(card).toContainText('模型调用');
   const screen = testInfo.outputPath('collaborative-workflow.png');
   await page.screenshot({ path: screen, fullPage: true });
   await testInfo.attach('自定义 Agent 协作写作', { path: screen, contentType: 'image/png' });
-  await dialog.getByRole('button', { name: '接受最终稿并保存正文', exact: true }).click();
-  await expect(dialog.getByRole('heading', { name: '已结束', exact: true })).toBeVisible();
-  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await card.getByRole('button', { name: '采用并保存正文写作', exact: true }).click();
+  await expect(card.getByRole('status').first()).toHaveText('已结束');
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue(
     '林舟用左手拨开窗栓。雨声里，来客的说辞露出了破绽。',
   );
+  // Manual gating: every node stops for the author, who can read it and release it.
+  await page.goto(`/?project=${project.id}&document=${chapter.document.id}`);
+  await page.getByLabel('写作模型', { exact: true }).selectOption(provider.id);
+  await chooseWorkflow(page, templateName);
+  await page.getByLabel('全部手动放行', { exact: true }).check();
+  await page.getByLabel('写作任务', { exact: true }).fill('手动放行的新一章。');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  const manual = page.getByRole('article', { name: '编排运行', exact: true }).last();
+  const release = manual.getByRole('button', { name: /^放行/ });
+  await expect(release).toBeVisible();
+  await expect(manual).toContainText('等待放行');
+  for (let i = 0; i < 8; i++) {
+    if (await manual.getByRole('button', { name: '采用并保存正文写作', exact: true }).isVisible())
+      break;
+    if (await release.isVisible()) await release.click();
+    await page.waitForTimeout(400);
+  }
+  await expect(
+    manual.getByRole('button', { name: '采用并保存正文写作', exact: true }),
+  ).toBeVisible();
+  const manualId = (
+    (await (await request.get(`/api/v1/workflows?projectId=${project.id}`)).json()).data as {
+      id: string;
+      snapshot: { input: { input: string } };
+    }[]
+  ).find((run) => run.snapshot.input.input === '手动放行的新一章。')?.id as string;
+  const other = (
+    await (
+      await request.post('/api/v1/projects', { data: { title: '不相关项目', format: 'short' } })
+    ).json()
+  ).data;
+  await page.goto(`/projects/${other.id}/workflows?run=${manualId}`);
+  await expect(page.getByRole('alert')).toContainText('运行记录不属于当前作品');
+  await expect(card).toHaveCount(0);
+  await page.goto(`/projects/${other.id}/writing?workflow=${manualId}`);
+  await expect(page.getByRole('alert')).toContainText('运行记录不属于当前作品');
+  await expect(card).toHaveCount(0);
 });
 
 test('trial-runs an unpublished custom Agent without changing formal text', async ({
@@ -167,7 +223,7 @@ test('trial-runs an unpublished custom Agent without changing formal text', asyn
   await dialog.getByLabel('角色模型', { exact: true }).selectOption(provider.id);
   await dialog.getByRole('button', { name: '保存并试运行 Agent', exact: true }).click();
   await expect(dialog.getByText('角色试运行 · 已结束', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('review_report', { exact: false }).first()).toBeVisible();
+  await expect(dialog.getByText('无重要问题', { exact: false }).first()).toBeVisible();
   const roles = (await (await request.get('/api/v1/agent-profiles')).json()).data;
   expect(
     roles.find((r: { draft: { name: string } }) => r.draft.name === '未发布的对白检查').versions,
@@ -222,28 +278,26 @@ test('runs worldbuilding, total outline and event workflows inside the writing a
   ).data;
   await page.goto(`/?project=${project.id}&document=${chapter.document.id}`);
   await page.getByLabel('写作模型', { exact: true }).selectOption(provider.id);
-  await page
-    .getByLabel('执行方式', { exact: true })
-    .selectOption({ label: '世界观构建与审校 · v1' });
+  await chooseWorkflow(page, '世界观构建与审校');
   await page.getByLabel('写作任务', { exact: true }).fill('设计一个施法会失去记忆的港城世界观。');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   let card = page.getByRole('article', { name: '编排运行', exact: true }).last();
   await expect(card).toContainText('雾港世界观');
-  await expect(card.getByRole('button', { name: '采用全部剩余世界观', exact: true })).toBeEnabled();
+  await expect(card.getByRole('button', { name: '采用全部剩余条目', exact: true })).toBeEnabled();
   await page.reload();
   card = page.getByRole('article', { name: '编排运行', exact: true }).last();
-  await expect(card.getByRole('button', { name: '采用全部剩余世界观', exact: true })).toBeEnabled();
-  await card.getByRole('button', { name: '采用全部剩余世界观', exact: true }).click();
+  await expect(card.getByRole('button', { name: '采用全部剩余条目', exact: true })).toBeEnabled();
+  await card.getByRole('button', { name: '采用全部剩余条目', exact: true }).click();
   await expect(card).toContainText('已保存 1 份文档');
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue('这是作者的原文。');
-  await page.getByLabel('执行方式', { exact: true }).selectOption({ label: '故事总纲规划 · v1' });
+  await chooseWorkflow(page, '故事总纲规划');
   await page.getByLabel('写作任务', { exact: true }).fill('根据刚采用的世界观规划故事总纲。');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   card = page.getByRole('article', { name: '编排运行', exact: true }).last();
   await expect(card.getByRole('button', { name: '采用并保存故事总纲', exact: true })).toBeEnabled();
   await card.getByRole('button', { name: '采用并保存故事总纲', exact: true }).click();
   await expect(card).toContainText('已保存 1 份文档');
-  await page.getByLabel('执行方式', { exact: true }).selectOption({ label: '故事事件规划 · v1' });
+  await chooseWorkflow(page, '故事事件规划');
   await page.getByLabel('写作任务', { exact: true }).fill('根据总纲拆分开篇两个故事事件。');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   card = page.getByRole('article', { name: '编排运行', exact: true }).last();

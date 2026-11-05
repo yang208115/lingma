@@ -118,7 +118,7 @@ describe('shared contracts', () => {
       deadlineMs: 1800000,
       steps: [
         { key: 'draft', name: '写作', stage: 'draft', agentVersionId: id },
-        { key: 'review', name: '审校', stage: 'review', agentVersionId: id },
+        { key: 'review', name: '审校', stage: 'review', agentVersionId: id, dependsOn: ['draft'] },
       ],
     });
     expect(template).not.toHaveProperty('maxModelCalls');

@@ -6,8 +6,10 @@ import {
   timestampSchema,
   usageTotalSchema,
 } from './domain.js';
-import { workflowArtifactPayloadSchema, workflowTaskSchema } from './workflow-artifacts.js';
+import { basicInformationKinds } from './elements.js';
+import { reviewIssueSchema, workflowArtifactSchema } from './workflow-artifacts.js';
 import { orderedWorkflowSteps, workflowAncestors, workflowDependencies } from './workflow-graph.js';
+import { workflowResultSchema, workflowTaskSchema } from './workflow-results.js';
 import { contextPreviewSchema, proposalSchema, runDetailSchema } from './writing.js';
 
 export const agentCapabilitySchema = z.enum(['plan', 'draft', 'generate', 'review', 'analysis']);
@@ -63,10 +65,11 @@ export const workflowStepSchema = z.strictObject({
   stage: z.enum(['plan', 'draft', 'generate', 'review', 'analysis', 'revise']),
   agentVersionId: idSchema,
   required: z.boolean().default(true),
+  gate: z.enum(['auto', 'manual']).default('auto'),
   dependsOn: z
     .array(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,49}$/))
     .max(16)
-    .optional(),
+    .default([]),
   position: z
     .strictObject({
       x: z.number().finite().min(-100000).max(100000),
@@ -75,91 +78,59 @@ export const workflowStepSchema = z.strictObject({
     .optional(),
 });
 export const workflowTemplateConfigSchema = z.preprocess(
-  (value) => {
-    const config = discardLegacyLimits(value, ['maxModelCalls', 'deadlineMs', 'maxRevisions']);
-    if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
-    const legacy = value as Record<string, unknown>;
-    return { autoRevise: legacy.maxRevisions !== 0, ...config };
-  },
+  (value) =>
+    discardLegacyLimits(value, ['maxModelCalls', 'deadlineMs', 'maxRevisions', 'confirmPlan']),
   z
     .strictObject({
       name: z.string().trim().min(1).max(100),
       taskType: workflowTaskSchema.default('chapter_write'),
       steps: z.array(workflowStepSchema).min(2).max(16),
-      confirmPlan: z.boolean().default(true),
       autoRevise: z.boolean().default(true),
+      adoptionGate: z.enum(['auto', 'manual']).default('auto'),
     })
     .superRefine((value, ctx) => {
-      let steps = value.steps;
-      try {
-        steps = orderedWorkflowSteps(steps);
-      } catch (error) {
-        ctx.addIssue({
-          code: 'custom',
-          message: error instanceof Error ? error.message : '流程连线无效',
-          path: ['steps'],
-        });
+      const fail = (message: string, path: (string | number)[] = ['steps']) =>
+        ctx.addIssue({ code: 'custom', message, path });
+      const steps = value.steps;
+      if (new Set(steps.map((s) => s.key)).size !== steps.length) {
+        fail('节点标识不能重复');
         return;
       }
-      if (new Set(steps.map((s) => s.key)).size !== steps.length)
-        ctx.addIssue({ code: 'custom', message: '节点标识不能重复', path: ['steps'] });
-      const firstReview = steps.findIndex((s) => s.stage === 'review');
-      const firstDraft = steps.findIndex((s) => ['draft', 'generate'].includes(s.stage));
-      if (
-        firstDraft < 0 ||
-        firstReview <= firstDraft ||
-        !steps.some((s) => s.stage === 'review' && s.required)
-      )
-        ctx.addIssue({
-          code: 'custom',
-          message: '需要先生成内容，再至少完成一个必需审校',
-          path: ['steps'],
-        });
+      try {
+        orderedWorkflowSteps(steps);
+      } catch (error) {
+        fail(error instanceof Error ? error.message : '流程连线无效');
+        return;
+      }
+      const outputs = steps.filter((s) => ['draft', 'generate'].includes(s.stage));
+      if (!outputs.length) fail('至少需要一个生成节点');
+      if (!steps.some((s) => s.stage === 'review' && s.required)) fail('至少需要一个必需审校');
       if (
         steps.filter((s) => s.stage === 'plan').length > 1 ||
         steps.filter((s) => s.stage === 'revise').length > 1
       )
-        ctx.addIssue({ code: 'custom', message: '最多一个策划及修订节点', path: ['steps'] });
-      steps.forEach((s, i) => {
+        fail('最多一个策划及修订节点');
+      const dependencies = workflowDependencies(steps);
+      for (const step of steps)
         if (
-          (s.stage === 'plan' && i > firstDraft) ||
-          (['draft', 'generate'].includes(s.stage) && i > firstReview) ||
-          (s.stage === 'revise' && i !== steps.length - 1)
-        )
-          ctx.addIssue({
-            code: 'custom',
-            message: '策划须在生成前，生成须在审校前，修订须放在最后',
-            path: ['steps', i],
-          });
-      });
-      const dependencies = workflowDependencies(value.steps);
-      const outputs = steps.filter((s) => ['draft', 'generate'].includes(s.stage));
-      const finalOutput = outputs.at(-1);
-      if (finalOutput) {
-        const ancestors = workflowAncestors(finalOutput.key, dependencies);
-        if (outputs.some((s) => s.key !== finalOutput.key && !ancestors.has(s.key)))
-          ctx.addIssue({
-            code: 'custom',
-            message: '多个生成节点必须连成一条内容修订链',
-            path: ['steps'],
-          });
-        for (const step of steps) {
-          if (
-            step.stage === 'review' &&
-            !workflowAncestors(step.key, dependencies).has(finalOutput.key)
+          step.stage === 'review' &&
+          (dependencies.get(step.key) ?? []).some(
+            (key) => steps.find((s) => s.key === key)?.stage === 'review',
           )
-            ctx.addIssue({
-              code: 'custom',
-              message: `审校「${step.name}」需要连接到最终生成节点的下游`,
-              path: ['steps'],
-            });
-          if (step.stage === 'plan' && !ancestors.has(step.key))
-            ctx.addIssue({
-              code: 'custom',
-              message: '策划必须连接到生成节点的上游',
-              path: ['steps'],
-            });
-        }
+        )
+          fail(`审校「${step.name}」不能依赖其他审校，同一稿件的审校相互独立`);
+      const finalOutput = outputs.at(-1);
+      if (!finalOutput) return;
+      const ancestors = workflowAncestors(finalOutput.key, dependencies);
+      if (outputs.some((s) => s.key !== finalOutput.key && !ancestors.has(s.key)))
+        fail('多个生成节点必须连成一条内容修订链');
+      for (const step of steps) {
+        if (
+          step.stage === 'review' &&
+          !workflowAncestors(step.key, dependencies).has(finalOutput.key)
+        )
+          fail(`审校「${step.name}」需要连接到最终生成节点的下游`);
+        if (step.stage === 'plan' && !ancestors.has(step.key)) fail('策划必须连接到生成节点的上游');
       }
     }),
 );
@@ -184,12 +155,27 @@ export const workflowInputSchema = z.strictObject({
   targetDocumentId: idSchema.nullable().default(null),
   baseVersionId: idSchema.nullable().default(null),
   mode: z.enum(['create', 'fill', 'replace', 'extract']).default('create'),
+  elementKinds: z
+    .array(z.enum(basicInformationKinds))
+    .min(1)
+    .max(5)
+    .refine((kinds) => new Set(kinds).size === kinds.length, '基础信息分类不能重复')
+    .optional(),
+  elementTargets: z
+    .array(z.strictObject({ documentId: idSchema, baseVersionId: idSchema }))
+    .max(30)
+    .refine(
+      (targets) => new Set(targets.map((target) => target.documentId)).size === targets.length,
+      '基础信息目标不能重复',
+    )
+    .optional(),
   templateVersionId: idSchema,
   providerConfigId: idSchema,
   input: z.string().trim().min(1).max(32000),
   allowedVersionIds: z.array(idSchema).max(1000).optional(),
   selectedVersionIds: z.array(idSchema).max(200).default([]),
   allowFutureOutline: z.boolean().default(false),
+  manualGates: z.boolean().default(false),
   expectedPreviewHash: hashSchema.optional(),
 });
 export const workflowPreviewSchema = z.preprocess(
@@ -203,34 +189,39 @@ export const workflowPreviewSchema = z.preprocess(
     warnings: z.array(z.string()),
   }),
 );
-export const workflowArtifactSchema = z.strictObject({
-  id: idSchema,
-  workflowId: idSchema,
-  nodeKey: z.string(),
-  runId: idSchema,
-  payload: workflowArtifactPayloadSchema,
-  contentHash: hashSchema,
-  inputArtifactIds: z.array(idSchema),
-  createdAt: timestampSchema,
-});
+export const workflowNodeStageSchema = z.enum([
+  'plan',
+  'draft',
+  'generate',
+  'review',
+  'analysis',
+  'revise',
+  'merge',
+]);
+export const workflowNodeStatusSchema = z.enum([
+  'pending',
+  'queued',
+  'running',
+  'awaiting_gate',
+  'released',
+  'failed',
+  'limited',
+  'cancelled',
+  'interrupted',
+  'skipped',
+  'stale',
+]);
 export const workflowNodeSchema = z.strictObject({
   key: z.string(),
+  templateKey: z.string(),
+  round: z.int().nonnegative(),
   name: z.string(),
-  stage: workflowStepSchema.shape.stage,
-  agentVersionId: idSchema,
+  stage: workflowNodeStageSchema,
+  agentVersionId: idSchema.nullable(),
   required: z.boolean(),
-  status: z.enum([
-    'pending',
-    'queued',
-    'running',
-    'succeeded',
-    'failed',
-    'limited',
-    'cancelled',
-    'interrupted',
-    'skipped',
-    'invalidated',
-  ]),
+  gate: z.enum(['auto', 'manual']),
+  dependsOn: z.array(z.string()).default([]),
+  status: workflowNodeStatusSchema,
   runIds: z.array(idSchema),
   artifactId: idSchema.nullable(),
   inputArtifactIds: z.array(idSchema),
@@ -248,10 +239,15 @@ export const workflowStatusSchema = z.enum([
   'cancelled',
   'interrupted',
 ]);
+export const workflowReasonCodeSchema = z.enum(['GATE', 'ADOPT', 'NO_CHANGE', 'RESULT']);
 export const workflowDecisionSchema = z.strictObject({
   expectedRevision: z.int().positive(),
   action: z.enum([
-    'confirm_plan',
+    'release',
+    'rerun',
+    'edit_artifact',
+    'set_adoption',
+    'rerun_missing',
     'continue',
     'use_candidate',
     'retry',
@@ -259,12 +255,14 @@ export const workflowDecisionSchema = z.strictObject({
     'pause',
     'cancel',
     'reject',
-    'edit_candidate',
     'use_snapshot',
     'accept_result',
   ]),
+  nodeKey: z.string().min(1).max(100).optional(),
   content: z.string().max(1000000).optional(),
-  payload: workflowArtifactPayloadSchema.optional(),
+  issueId: z.string().min(1).max(200).optional(),
+  adoption: z.enum(['adopt', 'ignore']).optional(),
+  reason: z.string().max(2000).optional(),
   itemIds: z.array(z.string().min(1).max(100)).max(30).optional(),
   feedback: z.string().max(8000).default(''),
 });
@@ -275,16 +273,27 @@ export const workflowRunSchema = z.strictObject({
   targetDocumentId: idSchema.nullable(),
   status: workflowStatusSchema,
   reason: z.string().nullable(),
+  reasonCode: workflowReasonCodeSchema.nullable().default(null),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   snapshot: workflowPreviewSchema,
+  round: z.int().nonnegative().default(0),
   nodes: z.array(workflowNodeSchema),
   artifacts: z.array(workflowArtifactSchema),
   latestDraftId: idSchema.nullable(),
-  planConfirmed: z.boolean(),
+  adoption: z
+    .record(
+      z.string(),
+      z.strictObject({ decision: z.enum(['adopt', 'ignore']), reason: z.string().max(2000) }),
+    )
+    .default({}),
+  notes: z.record(z.string(), z.string().max(8000)).default({}),
+  result: workflowResultSchema.nullable().default(null),
+  resultError: z.string().nullable().default(null),
+  resultWarnings: z.array(z.string()).default([]),
+  missingKinds: z.array(z.string()).default([]),
   revisionCount: z.int().nonnegative(),
   modelCalls: z.int().nonnegative(),
-  formatRepairs: z.int().nonnegative().default(0),
   elapsedMs: z.int().nonnegative(),
   pauseRequested: z.boolean(),
   proposalId: idSchema.nullable(),
@@ -325,7 +334,7 @@ export const workflowEventSchema = z.strictObject({
 });
 export const agentTestResultSchema = z.strictObject({
   run: runDetailSchema,
-  artifact: workflowArtifactPayloadSchema.nullable(),
+  artifact: z.string().nullable(),
 });
 export type AgentProfileConfig = z.infer<typeof agentProfileConfigSchema>;
 export type AgentProfileVersion = z.infer<typeof agentProfileVersionSchema>;
@@ -336,7 +345,8 @@ export type WorkflowTemplate = z.infer<typeof workflowTemplateSchema>;
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 export type WorkflowInputRequest = z.input<typeof workflowInputSchema>;
 export type WorkflowPreview = z.infer<typeof workflowPreviewSchema>;
-export type WorkflowArtifact = z.infer<typeof workflowArtifactSchema>;
 export type WorkflowNode = z.infer<typeof workflowNodeSchema>;
 export type WorkflowRun = z.infer<typeof workflowRunSchema>;
 export type WorkflowDecision = z.infer<typeof workflowDecisionSchema>;
+export type WorkflowStep = z.infer<typeof workflowStepSchema>;
+export { reviewIssueSchema };

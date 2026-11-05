@@ -1,4 +1,4 @@
-import type { ErrorCode } from '@lingma/shared';
+import type { ErrorCode, Json } from '@lingma/shared';
 
 /** Only these explicit, bounded codes cross the injected-service boundary. Raw causes stay private. */
 export class AgentError extends Error {
@@ -14,6 +14,7 @@ export class ActionError extends AgentError {
   constructor(
     code: ErrorCode,
     readonly publicMessage: string,
+    readonly publicDetails?: Json,
   ) {
     super(code);
   }

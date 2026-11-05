@@ -134,7 +134,7 @@ export class AgentLibrary {
       !this.db.prepare('SELECT id FROM provider_configs WHERE id=?').get(c.providerConfigId)
     )
       throw new AppError('NOT_FOUND', '角色指定的模型配置不存在', 404);
-    for (const id of c.skillVersionIds) this.skills.catalog(id);
+    for (const id of c.skillVersionIds) this.skills.snapshot(id);
     if (
       new Set(c.tools).size !== c.tools.length ||
       new Set(c.skillVersionIds).size !== c.skillVersionIds.length
@@ -252,6 +252,11 @@ export class AgentLibrary {
     this.store.database.transaction(() => {
       for (const [taskType, name, prompt] of [
         [
+          'basic_information',
+          '基础信息构建与审校',
+          '统筹生成基础信息：故事定位与主题、世界与场景、人物与关系、核心冲突、叙事与文风。按本次 elementKinds 覆盖全部所选分类，保证主题、时代、人物动机、冲突和叙事风格相互一致。每个候选使用正确 kind 及该分类字段；已有条目只使用 elementTargets 中的目标 ID，新条目的 targetDocumentId 为 null。fill 只补缺项，保留已有内容及锁定字段；作品定位和文风各维护一个条目。修订时返回完整批次，不丢失任何所选分类。不要生成正文、总纲或事件。',
+        ],
+        [
           'worldbuilding',
           '世界观构建与审校',
           '构建世界观条目，填写时代、地域、制度、势力、规则、代价与禁忌。只生成 worldbuilding 分类，不修改其他资料。',
@@ -290,7 +295,7 @@ export class AgentLibrary {
             name: `${name}·审校`,
             capability: 'review',
             prompt:
-              '检查当前产物的规则、因果、人物目标、完整性及与授权资料的一致性。问题引用当前产物原文或字段值；P0 引用授权资料或作者要求，不编造证据。',
+              '检查当前产物的规则、因果、人物目标、完整性及与授权资料的一致性。问题引用当前产物原文，P0 说明所依据的授权资料或作者要求，不编造证据。',
             contextKinds: documentKindSchema.options,
           }),
           true,
@@ -301,7 +306,6 @@ export class AgentLibrary {
           workflowTemplateConfigSchema.parse({
             taskType,
             name,
-            confirmPlan: false,
             autoRevise: true,
             steps: [
               { key: 'generate', name: '生成方案', stage: 'generate', agentVersionId: author.id },
@@ -310,6 +314,7 @@ export class AgentLibrary {
                 name: '一致性与完整性审校',
                 stage: 'review',
                 agentVersionId: review.id,
+                dependsOn: ['generate'],
               },
               { key: 'revise', name: '定向修订', stage: 'revise', agentVersionId: author.id },
             ],
@@ -356,18 +361,26 @@ export class AgentLibrary {
           name: '单章协作写作',
           steps: [
             { key: 'plan', name: '章纲策划', stage: 'plan', agentVersionId: versions[0]?.id },
-            { key: 'draft', name: '正文初稿', stage: 'draft', agentVersionId: versions[1]?.id },
+            {
+              key: 'draft',
+              name: '正文初稿',
+              stage: 'draft',
+              agentVersionId: versions[1]?.id,
+              dependsOn: ['plan'],
+            },
             {
               key: 'continuity',
               name: '一致性审校',
               stage: 'review',
               agentVersionId: versions[2]?.id,
+              dependsOn: ['draft'],
             },
             {
               key: 'narrative',
               name: '叙事审校',
               stage: 'review',
               agentVersionId: versions[3]?.id,
+              dependsOn: ['draft'],
             },
             { key: 'revise', name: '定向修订', stage: 'revise', agentVersionId: versions[1]?.id },
           ],

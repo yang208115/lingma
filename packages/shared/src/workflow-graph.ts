@@ -1,4 +1,4 @@
-/** Layout is presentation metadata; dependsOn is the executable graph. */
+/** Layout is presentation metadata; dependsOn is the only executable graph. */
 export type WorkflowGraphStep = {
   key: string;
   stage: string;
@@ -8,31 +8,10 @@ export type WorkflowGraphStep = {
 export function workflowDependencies<T extends WorkflowGraphStep>(
   steps: T[],
 ): Map<string, string[]> {
-  const dependencies = new Map<string, string[]>();
-  let previous: string | undefined;
-  let reviewInput: string | undefined;
-  for (const step of steps) {
-    // Legacy consecutive reviews consume the same candidate independently; execution stays serial.
-    // Explicit links retain their configured order. Revision is a feedback policy.
-    dependencies.set(
-      step.key,
-      step.stage === 'revise'
-        ? []
-        : (step.dependsOn ??
-            (step.stage === 'review'
-              ? reviewInput
-                ? [reviewInput]
-                : []
-              : previous
-                ? [previous]
-                : [])),
-    );
-    if (step.stage !== 'revise') {
-      previous = step.key;
-      if (step.stage !== 'review') reviewInput = step.key;
-    }
-  }
-  return dependencies;
+  // Revision is a system feedback loop and never an ordinary dependency.
+  return new Map(
+    steps.map((step) => [step.key, step.stage === 'revise' ? [] : (step.dependsOn ?? [])]),
+  );
 }
 
 export function workflowAncestors(key: string, dependencies: Map<string, string[]>): Set<string> {
