@@ -1,4 +1,4 @@
-import type { Skill, SkillDetail, SkillImportJob } from '@lingma/shared';
+import type { Project, Skill, SkillDetail, SkillImportJob, SkillListFilter } from '@lingma/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api.js';
 import { useLeaveGuard } from '../runtime.js';
@@ -16,7 +16,19 @@ const statuses = {
   interrupted: '导入中断',
 };
 type Summary = { id: string; versionNo: number; createdAt: string };
-export function SkillManager({ onClose }: { onClose(): void }) {
+export function SkillManager({
+  onClose,
+  projectId,
+  projects,
+}: {
+  onClose(): void;
+  projectId?: string | undefined;
+  projects: Project[];
+}) {
+  const filter = useRef<SkillListFilter>(
+    projectId ? { scope: 'project', projectId } : { scope: 'general' },
+  ).current;
+  const title = projectId ? '项目 Skill' : '通用 Skill';
   const [skills, setSkills] = useState<Skill[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
@@ -53,10 +65,10 @@ export function SkillManager({ onClose }: { onClose(): void }) {
     return () => window.removeEventListener('beforeunload', unload);
   }, []);
   const refreshList = useCallback(async () => {
-    const result = await skillApi.list();
+    const result = await skillApi.list(undefined, filter);
     setSkills(result.data);
     setCursor(result.nextCursor);
-  }, []);
+  }, [filter]);
   async function history(id: string) {
     const result = await skillApi.versions(id);
     setVersions(result.data);
@@ -105,7 +117,7 @@ export function SkillManager({ onClose }: { onClose(): void }) {
   }
   useEffect(() => {
     let disposed = false;
-    void Promise.all([skillApi.list(), skillApi.jobs()])
+    void Promise.all([skillApi.list(undefined, filter), skillApi.jobs(filter)])
       .then(([list, imports]) => {
         if (disposed) return;
         setSkills(list.data);
@@ -119,13 +131,13 @@ export function SkillManager({ onClose }: { onClose(): void }) {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [filter]);
   useEffect(() => {
     if (!jobs.some(active)) return;
     let disposed = false;
     const timer = setTimeout(() => {
       void skillApi
-        .jobs()
+        .jobs(filter)
         .then(async (current) => {
           if (disposed) return;
           setJobs(current);
@@ -149,7 +161,7 @@ export function SkillManager({ onClose }: { onClose(): void }) {
       disposed = true;
       clearTimeout(timer);
     };
-  }, [jobs, refreshList]);
+  }, [jobs, refreshList, filter]);
   async function beginImport(run: () => Promise<SkillImportJob>) {
     await action(async () => {
       const job = await run();
@@ -159,10 +171,14 @@ export function SkillManager({ onClose }: { onClose(): void }) {
   }
   async function importDirectory(files: File[]) {
     await action(async () => {
-      const result = await skillApi.localDirectory(files, (job) => {
-        setJobs((previous) => [job, ...previous.filter((item) => item.id !== job.id)]);
-        setNotice('正在逐项导入，请稍候…');
-      });
+      const result = await skillApi.localDirectory(
+        files,
+        (job) => {
+          setJobs((previous) => [job, ...previous.filter((item) => item.id !== job.id)]);
+          setNotice('正在逐项导入，请稍候…');
+        },
+        projectId ?? null,
+      );
       await refreshList();
       setNotice(
         `导入完成 ${result.jobs.filter((job) => job.status === 'completed').length} 个 Skill，失败 ${result.failures.length} 项。${result.ignored.length ? `忽略 ${result.ignored.length} 个 Skill 目录外的文件。` : ''}可在下方查看各项结果。`,
@@ -217,12 +233,16 @@ export function SkillManager({ onClose }: { onClose(): void }) {
     if (!busy) onClose();
   };
   return (
-    <section aria-label="Skill 管理">
+    <section aria-label={title}>
       <div className="dialog skill-manager">
         <div className="dialog-heading">
           <div>
-            <h2 id="skill-manager-title">Skill 管理</h2>
-            <p className="muted">导入工作副本，按版本查看正文、附件和来源。</p>
+            <h2 id="skill-manager-title">{title}</h2>
+            <p className="muted">
+              {projectId
+                ? `仅用于项目「${projects.find((project) => project.id === projectId)?.title ?? ''}」。写作时也可使用通用 Skill。`
+                : '所有项目均可使用。项目专属规则可在当前作品的「项目 Skill」中管理。'}
+            </p>
           </div>
           <button type="button" disabled={busy} onClick={close}>
             关闭 Skill 管理
@@ -260,7 +280,7 @@ export function SkillManager({ onClose }: { onClose(): void }) {
                 disabled={busy}
                 onClick={() =>
                   void action(async () => {
-                    const page = await skillApi.list(cursor);
+                    const page = await skillApi.list(cursor, filter);
                     setSkills((list) => [...list, ...page.data]);
                     setCursor(page.nextCursor);
                   })
@@ -275,6 +295,12 @@ export function SkillManager({ onClose }: { onClose(): void }) {
               <section className="skill-import" aria-label="导入 Skill">
                 <h3>导入 Skill</h3>
                 <p>
+                  导入到：{title}
+                  {projectId
+                    ? ` · ${projects.find((project) => project.id === projectId)?.title ?? ''}`
+                    : ''}
+                </p>
+                <p>
                   可选择单个 Skill 目录，或包含多个 Skill 的父目录，自动查找子目录中的 SKILL.md
                   并分别导入。每个 Skill 独立限制为 200 个文件、合计 16 MiB，单文件最多 2
                   MiB，入口最多 256 KiB。仅上传入口文件时会提示缺失附件。
@@ -288,7 +314,10 @@ export function SkillManager({ onClose }: { onClose(): void }) {
                     onChange={(event) => {
                       const files = [...(event.target.files ?? [])];
                       event.target.value = '';
-                      if (files.length) void beginImport(() => skillApi.local(files));
+                      if (files.length)
+                        void beginImport(() =>
+                          skillApi.local(files, undefined, undefined, projectId ?? null),
+                        );
                     }}
                   />
                 </label>
@@ -311,7 +340,7 @@ export function SkillManager({ onClose }: { onClose(): void }) {
                 <form
                   onSubmit={(event) => {
                     event.preventDefault();
-                    void beginImport(() => skillApi.git({ repository, subdir }));
+                    void beginImport(() => skillApi.git({ repository, subdir }, projectId ?? null));
                   }}
                 >
                   <label>
@@ -352,6 +381,37 @@ export function SkillManager({ onClose }: { onClose(): void }) {
                     {editing ? '查看预览' : '编辑 SKILL.md'}
                   </button>
                 </div>
+                <label>
+                  Skill 归属
+                  <select
+                    aria-label="Skill 归属"
+                    value={detail.skill.projectId ?? ''}
+                    disabled={busy || dirty || historical || Boolean(remote)}
+                    onChange={(event) => {
+                      const owner = event.target.value || null;
+                      void action(async () => {
+                        await skillApi.changeScope(
+                          detail.skill.id,
+                          detail.skill.currentVersionId,
+                          owner,
+                        );
+                        setDetail(null);
+                        setEntry('');
+                        setEditing(false);
+                        await refreshList();
+                        setJobs(await skillApi.jobs(filter));
+                        setNotice('已修改 Skill 归属，历史版本和附件均保留。');
+                      });
+                    }}
+                  >
+                    <option value="">通用 Skill · 所有项目可用</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        项目 Skill · {project.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label>
                   查看版本
                   <select

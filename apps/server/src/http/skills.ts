@@ -1,9 +1,12 @@
 import {
-  gitImportSchema,
+  changeSkillScopeSchema,
+  gitSkillImportSchema,
   idSchema,
   paginationSchema,
   saveSkillSchema,
   skillLimits,
+  skillListFilterSchema,
+  skillScopeInputSchema,
   skillUpdateSchema,
 } from '@lingma/shared';
 import { Hono } from 'hono';
@@ -29,11 +32,16 @@ export function skillRoutes(skills: SkillService) {
     await next();
   });
   app.get('/skills', (context) => {
-    const { limit, cursor } = paginationSchema.parse(context.req.query());
+    const { scope, projectId, ...pagination } = context.req.query();
+    const { limit, cursor } = paginationSchema.parse(pagination);
     if (cursor) idSchema.parse(cursor);
-    return context.json(skills.list(limit, cursor));
+    return context.json(
+      skills.list(limit, cursor, skillListFilterSchema.parse({ scope, projectId })),
+    );
   });
-  app.get('/skill-imports', (context) => context.json({ data: skills.jobs() }));
+  app.get('/skill-imports', (context) =>
+    context.json({ data: skills.jobs(skillListFilterSchema.parse(context.req.query())) }),
+  );
   app.get('/skill-imports/:jobId', (context) =>
     context.json({ data: skills.job(idSchema.parse(context.req.param('jobId'))) }),
   );
@@ -65,6 +73,7 @@ export function skillRoutes(skills: SkillService) {
     const target = skillId
       ? { skillId: idSchema.parse(skillId), baseVersionId: idSchema.parse(base) }
       : undefined;
+    const { projectId } = skillScopeInputSchema.parse({ projectId: form.get('projectId') ?? null });
     for (const file of files)
       if ((file as File).size > skillLimits.fileBytes)
         throw new AppError('VALIDATION_ERROR', '单个文件不能超过 2 MiB', 400);
@@ -75,13 +84,31 @@ export function skillRoutes(skills: SkillService) {
       })),
     );
     return context.json(
-      { data: skills.importLocal(input, prefix ? prefix.slice(0, -1) : 'SKILL.md', target) },
+      {
+        data: skills.importLocal(
+          input,
+          prefix ? prefix.slice(0, -1) : 'SKILL.md',
+          target,
+          projectId,
+        ),
+      },
       202,
     );
   });
-  app.post('/skills/import/git', async (context) =>
-    context.json({ data: skills.importGit(gitImportSchema.parse(await context.req.json())) }, 202),
-  );
+  app.post('/skills/import/git', async (context) => {
+    const { projectId, ...input } = gitSkillImportSchema.parse(await context.req.json());
+    return context.json({ data: skills.importGit(input, undefined, projectId) }, 202);
+  });
+  app.patch('/skills/:id/scope', async (context) => {
+    const input = changeSkillScopeSchema.parse(await context.req.json());
+    return context.json({
+      data: skills.changeScope(
+        idSchema.parse(context.req.param('id')),
+        input.baseVersionId,
+        input.projectId,
+      ),
+    });
+  });
   app.get('/skill-versions/:versionId', (context) =>
     context.json({ data: skills.snapshot(idSchema.parse(context.req.param('versionId'))) }),
   );

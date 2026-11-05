@@ -3,6 +3,7 @@ import {
   pageSchema,
   responseSchema,
   type SkillImportJob,
+  type SkillListFilter,
   skillDetailSchema,
   skillImportJobSchema,
   skillJobsSchema,
@@ -17,9 +18,18 @@ const json = (body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
+function filterQuery(filter: SkillListFilter = {}) {
+  const params = new URLSearchParams();
+  if (filter.scope) params.set('scope', filter.scope);
+  if (filter.projectId) params.set('projectId', filter.projectId);
+  return params.toString();
+}
 export const skillApi = {
-  list: (cursor?: string) =>
-    request(`/skills?limit=200${cursor ? `&cursor=${cursor}` : ''}`, pageSchema(skillSchema)),
+  list: (cursor?: string, filter: SkillListFilter = {}) =>
+    request(
+      `/skills?limit=200&${filterQuery(filter)}${cursor ? `&cursor=${cursor}` : ''}`,
+      pageSchema(skillSchema),
+    ),
   detail: async (id: string, versionId?: string) =>
     (
       await request(
@@ -39,11 +49,25 @@ export const skillApi = {
         method: 'PUT',
       })
     ).data,
-  jobs: async () => (await request('/skill-imports', responseSchema(skillJobsSchema))).data,
+  jobs: async (filter: SkillListFilter = {}) =>
+    (await request(`/skill-imports?${filterQuery(filter)}`, responseSchema(skillJobsSchema))).data,
   job: async (id: string) =>
     (await request(`/skill-imports/${id}`, responseSchema(skillImportJobSchema))).data,
-  git: async (input: GitImport) =>
-    (await request('/skills/import/git', responseSchema(skillImportJobSchema), json(input))).data,
+  git: async (input: GitImport, projectId: string | null = null) =>
+    (
+      await request(
+        '/skills/import/git',
+        responseSchema(skillImportJobSchema),
+        json({ ...input, projectId }),
+      )
+    ).data,
+  changeScope: async (id: string, baseVersionId: string, projectId: string | null) =>
+    (
+      await request(`/skills/${id}/scope`, responseSchema(skillDetailSchema), {
+        ...json({ baseVersionId, projectId }),
+        method: 'PATCH',
+      })
+    ).data,
   update: async (id: string, baseVersionId: string) =>
     (
       await request(
@@ -56,10 +80,12 @@ export const skillApi = {
     files: File[],
     target?: { skillId: string; baseVersionId: string },
     paths = files.map((file) => file.webkitRelativePath || file.name),
+    projectId: string | null = null,
   ) => {
     const form = new FormData();
     for (const file of files) form.append('files', file);
     form.set('paths', JSON.stringify(paths));
+    if (projectId) form.set('projectId', projectId);
     if (target) {
       form.set('skillId', target.skillId);
       form.set('baseVersionId', target.baseVersionId);
@@ -71,7 +97,11 @@ export const skillApi = {
       })
     ).data;
   },
-  localDirectory: async (files: File[], onJob: (job: SkillImportJob) => void) => {
+  localDirectory: async (
+    files: File[],
+    onJob: (job: SkillImportJob) => void,
+    projectId: string | null = null,
+  ) => {
     const { skills, ignored } = splitSkillDirectory(
       files.map((file) => file.webkitRelativePath || file.name),
     );
@@ -88,6 +118,7 @@ export const skillApi = {
               group.indices.map((index) => files[index] as File),
               undefined,
               group.paths,
+              projectId,
             );
             break;
           } catch (error) {

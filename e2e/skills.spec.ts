@@ -26,8 +26,8 @@ async function imported(request: APIRequestContext, content: string) {
 }
 async function manager(page: Page) {
   await page.goto('/');
-  await page.getByRole('link', { name: 'Skill 管理', exact: true }).click();
-  await expect(page.getByRole('main', { name: 'Skill 管理' })).toBeVisible();
+  await page.getByRole('link', { name: '通用 Skill', exact: true }).click();
+  await expect(page.getByRole('main', { name: '通用 Skill' })).toBeVisible();
 }
 async function openSkill(page: Page, name: string) {
   await manager(page);
@@ -143,12 +143,12 @@ test('directory import displays attachments and examples, edits immutable versio
   );
   expect(attachment.ok()).toBe(true);
   expect(await attachment.text()).toContain('文风');
-  await page.getByRole('heading', { name: 'Skill 管理', exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole('heading', { name: '通用 Skill', exact: true }).scrollIntoViewIfNeeded();
   const screenshot = testInfo.outputPath('skill-manager.png');
   await page.screenshot({ path: screenshot, fullPage: true });
   await testInfo.attach('Skill workspace', { path: screenshot, contentType: 'image/png' });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole('main', { name: 'Skill 管理' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '通用 Skill' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
@@ -239,7 +239,7 @@ test('failed Skill save preserves text for retry', async ({ page, request }) => 
   await page.getByRole('button', { name: '保存新版本', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('已保存为版本 2');
   await page.getByRole('button', { name: '关闭 Skill 管理' }).click();
-  await expect(page.getByRole('main', { name: 'Skill 管理' })).toHaveCount(0);
+  await expect(page.getByRole('main', { name: '通用 Skill' })).toHaveCount(0);
 });
 
 test('Git import reports a blocked private source and its task remains visible after reload', async ({
@@ -253,8 +253,60 @@ test('Git import reports a blocked private source and its task remains visible a
     'Git 来源必须解析到公网地址',
   );
   await page.reload();
-  await page.getByRole('link', { name: 'Skill 管理', exact: true }).click();
+  await page.getByRole('link', { name: '通用 Skill', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Skill 导入记录' })).toContainText(
     'Git 来源必须解析到公网地址',
   );
+});
+
+test('general and project Skill pages import separately, switch projects and preserve moved history', async ({
+  page,
+  request,
+}, testInfo) => {
+  const createProject = async (title: string) =>
+    (await (await request.post('/api/v1/projects', { data: { title, format: 'short' } })).json())
+      .data;
+  const first = await createProject(`Skill 项目一 ${crypto.randomUUID()}`);
+  const second = await createProject(`Skill 项目二 ${crypto.randomUUID()}`);
+  const name = `项目专属规则 ${crypto.randomUUID()}`;
+  const generalName = `通用规则 ${crypto.randomUUID()}`;
+  await imported(request, `# ${generalName}`);
+  await page.goto(`/projects/${first.id}/skills`);
+  await expect(page.getByRole('main', { name: '项目 Skill' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '项目 Skill', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '导入 Skill', exact: true }).click();
+  await page.getByLabel('上传文件', { exact: true }).setInputFiles({
+    name: 'SKILL.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(`# ${name}`),
+  });
+  const list = page.getByRole('complementary', { name: 'Skill 列表' });
+  await list.getByRole('button', { name: `${name} 本地副本`, exact: true }).click();
+  await expect(page.getByLabel('Skill 归属', { exact: true })).toHaveValue(first.id);
+  const versionId = await page.getByLabel('skillVersionId', { exact: true }).inputValue();
+  await expect(
+    list.getByRole('button', { name: `${generalName} 本地副本`, exact: true }),
+  ).toHaveCount(0);
+  await page.reload();
+  await expect(list.getByRole('button', { name: `${name} 本地副本`, exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('project-skills.png'), fullPage: true });
+  await page.getByLabel('当前作品', { exact: true }).selectOption(second.id);
+  await expect(page).toHaveURL(`/projects/${second.id}/skills`);
+  await expect(list.getByRole('button', { name: `${name} 本地副本`, exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: '通用 Skill', exact: true }).click();
+  await expect(
+    list.getByRole('button', { name: `${generalName} 本地副本`, exact: true }),
+  ).toBeVisible();
+  await expect(list.getByRole('button', { name: `${name} 本地副本`, exact: true })).toHaveCount(0);
+  await page.goto(`/projects/${first.id}/skills`);
+  await list.getByRole('button', { name: `${name} 本地副本`, exact: true }).click();
+  await page.getByLabel('Skill 归属', { exact: true }).selectOption('');
+  await expect(page.getByRole('status')).toContainText('已修改 Skill 归属');
+  await expect(list.getByRole('button', { name: `${name} 本地副本`, exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: '通用 Skill', exact: true }).click();
+  await list.getByRole('button', { name: `${name} 本地副本`, exact: true }).click();
+  await expect(page.getByLabel('skillVersionId', { exact: true })).toHaveValue(versionId);
+  await expect(page.getByLabel('Skill 归属', { exact: true })).toHaveValue('');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

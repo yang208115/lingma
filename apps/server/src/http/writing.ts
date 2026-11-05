@@ -3,8 +3,8 @@ import {
   idSchema,
   paginationSchema,
   providerInputSchema,
-  sessionInputSchema,
   renameSessionSchema,
+  sessionInputSchema,
   writingRunInputSchema,
 } from '@lingma/shared';
 import { Hono } from 'hono';
@@ -12,8 +12,8 @@ import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
-import type { WritingService } from '../writing/service.js';
 import { acceptOutlineCreation, rejectOutlineCreation } from '../writing/outlines.js';
+import type { WritingService } from '../writing/service.js';
 
 export function eventCursor(header: string | undefined, query: string | undefined) {
   const raw = header !== undefined ? header : (query ?? '0');

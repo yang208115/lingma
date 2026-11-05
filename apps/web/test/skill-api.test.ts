@@ -13,6 +13,7 @@ function job(status: SkillImportJob['status']): SkillImportJob {
     id: randomUUID(),
     type: 'local',
     skillId: null,
+    projectId: null,
     baseVersionId: null,
     status,
     source: { type: 'local', ref: 'test', commit: null, subdir: null },

@@ -1,7 +1,9 @@
 import {
+  basicInformationKinds,
   type ContextPreview,
   type Document,
   hasElementContent,
+  isBasicInformationKind,
   isStoryEventKind,
   linkedChapterIds,
   orderedChapters,
@@ -35,14 +37,17 @@ import {
   SquarePen,
 } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { ApiError, api } from '../api.js';
 import { elementApi } from '../element-api.js';
 import { useProjectWorkspace } from '../project-context.js';
 import { useProjectProvider } from '../provider-selection.js';
 import { workflowApi } from '../workflow-api.js';
 import { textHash, writingApi } from '../writing-api.js';
-import { AssistantWorkflowCard, useAssistantWorkflows } from './AssistantWorkflows.js';
+import { AssistantWorkflowCard } from './AssistantWorkflowCard.js';
+import { useAssistantWorkflows } from './AssistantWorkflows.js';
 import { ChatHistory } from './ChatHistory.js';
+import { ExecutionModeMenu } from './ExecutionModeMenu.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { OutlineCreationCard } from './OutlineCreationCard.js';
 import { ProposalDiagnostics, RunDiagnostics } from './RunDiagnostics.js';
@@ -93,6 +98,7 @@ export function WritingPanel({
   beforeRun,
   onProposalsChange,
   onReviewProposal,
+  onPreviewPlan,
   onOutlinesCreated,
   proposalRefresh = 0,
   composerInsertion,
@@ -106,6 +112,7 @@ export function WritingPanel({
   beforeRun(): Promise<void>;
   onProposalsChange(projectId: string, runId: string | null, proposals: Proposal[]): void;
   onReviewProposal(proposal: Proposal): void;
+  onPreviewPlan?(preview: { runId: string; title: string; content: string; label: string }): void;
   onOutlinesCreated(projectId: string, documentId: string): Promise<void>;
   proposalRefresh?: number;
   composerInsertion: { id: string; text: string } | null;
@@ -126,7 +133,19 @@ export function WritingPanel({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [debug, setDebug] = useState(() => remembered('lingma:debug') === 'true');
   const [sessionId, setSessionId] = useState(() => remembered(`lingma:session:${projectId}`));
-  const workflows = useAssistantWorkflows(projectId, sessionId);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedWorkflowId = searchParams.get('workflow') ?? '';
+  const clearWorkflowLink = () => {
+    if (!requestedWorkflowId) return;
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete('workflow');
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [sessionTitle, setSessionTitle] = useState('');
   const [messages, setMessages] = useState<
     { id: string; runId: string; role: string; content: string }[]
@@ -230,6 +249,34 @@ export function WritingPanel({
       void load(id).catch((e: Error) => setError(e.message));
     },
     [load, projectId],
+  );
+  const openWorkflowSession = useCallback(
+    (id: string) => {
+      if (currentSession.current !== id) {
+        setSessionTitle('');
+        setMessages([]);
+        setMessageCursor(null);
+        messagesLoadedFor.current = '';
+      }
+      currentSession.current = id;
+      current.current = '';
+      seq.current = 0;
+      setSessionId(id);
+      setRun(null);
+      setRecordsOpen(false);
+      setError('');
+      setConnection('');
+      remember(`lingma:session:${projectId}`, id);
+      remember(`lingma:run:${projectId}`, '');
+    },
+    [projectId],
+  );
+  const [manualGates, setManualGates] = useState(false);
+  const workflows = useAssistantWorkflows(
+    projectId,
+    sessionId,
+    requestedWorkflowId,
+    openWorkflowSession,
   );
   useEffect(() => {
     onProposalsChange(
@@ -484,6 +531,7 @@ export function WritingPanel({
         ? document.kind ===
           {
             chapter_write: 'chapter',
+            basic_information: null,
             worldbuilding: 'worldbuilding',
             master_outline: 'master_outline',
             story_events: 'chapter_outline',
@@ -665,6 +713,7 @@ export function WritingPanel({
   }, [run, messages, recordsOpen, sessionId]);
   function resetConversation(clearTask: boolean) {
     if (busy || runActive) return;
+    clearWorkflowLink();
     currentSession.current = '';
     current.current = '';
     seq.current = 0;
@@ -717,6 +766,15 @@ export function WritingPanel({
       const prepared = await build(workflows.template?.config.taskType);
       if (workflows.versionId) {
         if (!workflows.template) throw new Error('请选择已发布的编排模板');
+        const basicTargets =
+          workflows.template.config.taskType === 'basic_information'
+            ? (await elementApi.list(projectId)).filter(
+                (entry) =>
+                  entry.status !== 'archived' && isBasicInformationKind(entry.document.kind),
+              )
+            : [];
+        if (basicTargets.length > 30)
+          throw new Error('基础信息条目较多，请到基本信息页按分类运行编排');
         await workflows.start(
           workflowInputSchema.parse({
             projectId,
@@ -725,9 +783,24 @@ export function WritingPanel({
             targetDocumentId: prepared.target?.documentId ?? null,
             baseVersionId: prepared.target?.baseVersionId ?? null,
             templateVersionId: workflows.versionId,
+            manualGates,
             providerConfigId: providerId,
             input: prepared.input,
-            mode: prepared.target ? 'replace' : 'create',
+            mode:
+              workflows.template.config.taskType === 'basic_information'
+                ? 'fill'
+                : prepared.target
+                  ? 'replace'
+                  : 'create',
+            ...(workflows.template.config.taskType === 'basic_information'
+              ? {
+                  elementKinds: [...basicInformationKinds],
+                  elementTargets: basicTargets.map((entry) => ({
+                    documentId: entry.document.id,
+                    baseVersionId: entry.version.id,
+                  })),
+                }
+              : {}),
             selectedVersionIds: prepared.context.selectedVersionIds,
             allowedVersionIds: prepared.context.allowedVersionIds,
             allowFutureOutline: prepared.context.allowFutureOutline,
@@ -759,6 +832,7 @@ export function WritingPanel({
     reveal = false,
   ) {
     if (busy || runActive) return;
+    clearWorkflowLink();
     currentSession.current = session.id;
     current.current = '';
     seq.current = 0;
@@ -1121,6 +1195,7 @@ export function WritingPanel({
               <AssistantWorkflowCard
                 key={workflow.id}
                 run={workflow}
+                onPreviewPlan={onPreviewPlan}
                 onChange={workflows.update}
                 beforeAccept={beforeRun}
                 onSaved={async (ids) => {
@@ -1223,29 +1298,21 @@ export function WritingPanel({
                 </select>
                 <ChevronDown size={12} aria-hidden="true" />
               </label>
-              <label>
-                <span className="sr-only">执行方式</span>
-                <select
-                  aria-label="执行方式"
-                  value={workflows.versionId}
-                  onChange={(event) => workflows.setVersionId(event.target.value)}
-                >
-                  <option value="">直接生成</option>
-                  {Object.entries(workflowTaskLabels).map(([type, label]) => (
-                    <optgroup key={type} label={label}>
-                      {workflows.templates
-                        .flatMap((item) => item.versions.slice(0, 1))
-                        .filter((version) => version.config.taskType === type)
-                        .map((version) => (
-                          <option key={version.id} value={version.id}>
-                            {version.config.name} · v{version.versionNo}
-                          </option>
-                        ))}
-                    </optgroup>
-                  ))}
-                </select>
-                <ChevronDown size={12} aria-hidden="true" />
-              </label>
+              <ExecutionModeMenu
+                templates={workflows.templates}
+                value={workflows.versionId}
+                onChange={workflows.setVersionId}
+              />
+              {workflows.versionId && (
+                <label className="checkbox" title="每个节点完成后都停下，等待作者查看后放行">
+                  <input
+                    type="checkbox"
+                    checked={manualGates}
+                    onChange={(event) => setManualGates(event.target.checked)}
+                  />
+                  全部手动放行
+                </label>
+              )}
             </div>
             <div className="composer-actions">
               <button

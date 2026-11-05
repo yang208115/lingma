@@ -169,6 +169,36 @@ const actionContext = () => ({
   signal: new AbortController().signal,
 });
 
+it('exposes general and current-project skills to writing and rejects a pinned skill from another project', async () => {
+  const f = await fixture();
+  const other = f.novels.createProject('另一项目');
+  const own = f.skills.importLocal(
+    [{ path: 'SKILL.md', bytes: new TextEncoder().encode('# 当前项目规则') }],
+    'own',
+    undefined,
+    f.project.id,
+  );
+  const foreign = f.skills.importLocal(
+    [{ path: 'SKILL.md', bytes: new TextEncoder().encode('# 其他项目规则') }],
+    'foreign',
+    undefined,
+    other.id,
+  );
+  await f.skills.idle();
+  const preview = await f.writing.preview(f.input);
+  expect(preview.skills.map((s) => s.name).sort()).toEqual(['写作测试', '当前项目规则'].sort());
+  expect(preview.request.systemPrompt).not.toContain('其他项目规则');
+  await expect(
+    f.writing.preview({ ...f.input, skillVersionId: f.skills.job(foreign.id).versionId as string }),
+  ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  const ownVersion = f.skills.job(own.id).versionId as string;
+  expect(
+    (await f.writing.preview({ ...f.input, skillVersionId: ownVersion })).skills.some(
+      (s) => s.versionId === ownVersion,
+    ),
+  ).toBe(true);
+});
+
 it('edits the Agent prompt through the API, invalidates previews and freezes the actual prompt in each run', async () => {
   const f = await fixture();
   const before = await f.writing.preview(f.input);
@@ -631,14 +661,25 @@ it('requires current bases and rejects fabricated citations without changing the
   const result = await done(f.writing, bad.id);
   expect(result.proposals).toHaveLength(0);
   expect(result.tools[0]?.result).toMatchObject({ ok: false, error: { code: 'VALIDATION_ERROR' } });
-  f.setFactory(() => new FakeModelAdapter([[answer('candidate')]]));
+  f.setFactory(
+    () =>
+      new FakeModelAdapter([
+        [
+          answer('', [
+            {
+              id: 'good',
+              name: 'propose_document_change',
+              arguments: { content: 'candidate', reason: 'r', citations: [] },
+            },
+          ]),
+        ],
+        [answer('已提交')],
+      ]),
+  );
   const next = await f.writing.create(f.input, randomUUID());
   const completed = await done(f.writing, next.id);
-  const proposal = f.writing.store.candidate(
-    next.id,
-    completed.output?.messageId as string,
-    randomUUID(),
-  );
+  const proposal = completed.proposals[0];
+  if (!proposal) throw new Error('missing proposal');
   f.novels.saveDocument(f.chapter.document.id, {
     baseVersionId: f.chapter.version.id,
     content: '作者新稿',
@@ -662,10 +703,25 @@ it('applies UTF-16 selection replacement and rejects stale or mismatched selecti
       selection: { from: 2, to: 5, textHash: digest(f.chapter.version.content.slice(2, 5)) },
     },
   };
-  f.setFactory(() => new FakeModelAdapter([[answer('以左手轻轻')]]));
+  f.setFactory(
+    () =>
+      new FakeModelAdapter([
+        [
+          answer('', [
+            {
+              id: 'sel',
+              name: 'propose_document_change',
+              arguments: { content: '以左手轻轻', reason: 'r', citations: [] },
+            },
+          ]),
+        ],
+        [answer('已提交')],
+      ]),
+  );
   const created = await f.writing.create(input, randomUUID()),
     run = await done(f.writing, created.id);
-  const proposal = f.writing.store.candidate(run.id, run.output?.messageId as string, randomUUID());
+  const proposal = run.proposals[0];
+  if (!proposal) throw new Error('missing proposal');
   f.writing.store.accept(proposal.id, randomUUID());
   expect(f.novels.getDocument(f.chapter.document.id).version.content).toBe(
     `${f.chapter.version.content.slice(0, 2)}以左手轻轻${f.chapter.version.content.slice(5)}`,
@@ -1421,7 +1477,7 @@ it('never silently trims pinned context and rejects an obsolete preview before c
     }),
   ).rejects.toMatchObject({ code: 'CONTEXT_TOO_LARGE' });
   const small = f.writing.providers.save(
-    { ...f.provider.config, connection: { ...f.provider.config.connection, contextWindow: 16000 } },
+    { ...f.provider.config, connection: { ...f.provider.config.connection, contextWindow: 11000 } },
     f.provider.id,
     f.provider.revision + 1,
   );

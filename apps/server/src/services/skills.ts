@@ -5,6 +5,7 @@ import {
   type SkillCatalogEntry,
   type SkillDetail,
   type SkillImportJob,
+  type SkillListFilter,
   type SkillSource,
   type SkillVersion,
   skillDetailSchema,
@@ -40,6 +41,7 @@ function skill(row: Row): Skill {
     id: row.id,
     name: row.name,
     currentVersionId: row.current_version_id,
+    projectId: row.project_id,
     source: {
       type: row.source_type,
       ref: row.source_ref,
@@ -53,6 +55,7 @@ function job(row: Row): SkillImportJob {
     id: row.id,
     type: row.type,
     skillId: row.skill_id,
+    projectId: row.project_id,
     baseVersionId: row.base_version_id,
     status: row.status,
     source: JSON.parse(String(row.source_json)),
@@ -85,10 +88,27 @@ export class SkillService {
   private get db() {
     return this.database.connection;
   }
-  list(limit: number, cursor?: string) {
+  private assertProject(projectId: string) {
+    if (
+      !this.db.prepare('SELECT id FROM projects WHERE id=? AND deleted_at IS NULL').get(projectId)
+    )
+      throw new AppError('NOT_FOUND', '项目不存在或已移入回收站', 404);
+  }
+  private filter(filter: SkillListFilter = {}) {
+    if (filter.projectId) this.assertProject(filter.projectId);
+    if (filter.scope === 'project') {
+      if (!filter.projectId) throw new AppError('VALIDATION_ERROR', '项目 Skill 必须指定项目', 400);
+      return { sql: 'project_id = ?', params: [filter.projectId] };
+    }
+    if (filter.scope === 'general' || !filter.projectId)
+      return { sql: 'project_id IS NULL', params: [] };
+    return { sql: '(project_id IS NULL OR project_id = ?)', params: [filter.projectId] };
+  }
+  list(limit: number, cursor?: string, filter: SkillListFilter = {}) {
+    const where = this.filter(filter);
     const rows = this.db
-      .prepare('SELECT * FROM skills WHERE id > ? ORDER BY id LIMIT ?')
-      .all(cursor ?? '', limit + 1) as Row[];
+      .prepare(`SELECT * FROM skills WHERE ${where.sql} AND id > ? ORDER BY id LIMIT ?`)
+      .all(...where.params, cursor ?? '', limit + 1) as Row[];
     return {
       data: rows.slice(0, limit).map(skill),
       nextCursor: rows.length > limit ? String(rows[limit - 1]?.id) : null,
@@ -141,14 +161,20 @@ export class SkillService {
     if (!row) throw new AppError('NOT_FOUND', 'Skill 版本不存在', 404);
     return this.version(row.skill_id, versionId);
   }
-  catalog(preferredVersionId?: string): SkillCatalogEntry[] {
+  catalog(preferredVersionId?: string, projectId?: string): SkillCatalogEntry[] {
     return this.db.transaction(() => {
+      const where = this.filter({ projectId });
       const preferred = preferredVersionId ? this.snapshot(preferredVersionId) : null;
+      if (preferred) {
+        const owner = this.get(preferred.skillId).projectId;
+        if (owner && owner !== projectId)
+          throw new AppError('FORBIDDEN', '此 Skill 不属于当前项目', 403);
+      }
       const rows = this.db
         .prepare(
-          'SELECT s.id,s.name,v.id AS version_id,v.metadata_json FROM skills s JOIN skill_versions v ON v.id=s.current_version_id ORDER BY s.id',
+          `SELECT s.id,s.name,v.id AS version_id,v.metadata_json FROM skills s JOIN skill_versions v ON v.id=s.current_version_id WHERE ${where.sql} ORDER BY s.id`,
         )
-        .all() as Row[];
+        .all(...where.params) as Row[];
       return rows.map((row) => {
         const pinned = preferred?.skillId === row.id ? preferred : null;
         const metadata = pinned?.metadata ?? JSON.parse(String(row.metadata_json));
@@ -183,6 +209,25 @@ export class SkillService {
         parsed: { body, missingFiles, warnings, examples },
       });
     })();
+  }
+  changeScope(id: string, baseVersionId: string, projectId: string | null) {
+    return this.gate.writeSync(() =>
+      this.database.transaction((db) => {
+        this.assertVersion(id, baseVersionId);
+        if (projectId) this.assertProject(projectId);
+        if (
+          db
+            .prepare(
+              "SELECT id FROM skill_import_jobs WHERE skill_id=? AND status IN ('queued','fetching','publishing')",
+            )
+            .get(id)
+        )
+          throw new AppError('PROJECT_BUSY', '此 Skill 正在更新，请完成后修改归属', 409);
+        db.prepare('UPDATE skills SET project_id=? WHERE id=?').run(projectId, id);
+        db.prepare('UPDATE skill_import_jobs SET project_id=? WHERE skill_id=?').run(projectId, id);
+        return this.detail(id);
+      }),
+    );
   }
   versions(id: string, limit: number, cursor?: number) {
     this.get(id);
@@ -245,11 +290,14 @@ export class SkillService {
     files: SkillVersion['files'],
     source: SkillSource,
     jobId?: string,
+    projectId: string | null = null,
   ): SkillDetail {
     files = files.map((file) => skillFileSchema.parse(file));
     files.sort((a, b) => Buffer.compare(Buffer.from(a.relativePath), Buffer.from(b.relativePath)));
     return this.database.transaction((db) => {
       if (id && baseVersionId) this.assertVersion(id, baseVersionId);
+      const owner = id ? this.get(id).projectId : projectId;
+      if (owner) this.assertProject(owner);
       const skillId = id ?? randomUUID();
       const versionId = randomUUID();
       const versionNo = id
@@ -264,7 +312,7 @@ export class SkillService {
       const now = new Date().toISOString();
       if (!id)
         db.prepare(
-          'INSERT INTO skills(id,name,source_type,source_ref,source_commit,source_subdir,current_version_id) VALUES(?,?,?,?,?,?,?)',
+          'INSERT INTO skills(id,name,source_type,source_ref,source_commit,source_subdir,current_version_id,project_id) VALUES(?,?,?,?,?,?,?,?)',
         ).run(
           skillId,
           parsed.name,
@@ -273,6 +321,7 @@ export class SkillService {
           source.commit,
           source.subdir,
           versionId,
+          projectId,
         );
       db.prepare(
         'INSERT INTO skill_versions(id,skill_id,version_no,entry_content,metadata_json,source_snapshot_json,manifest_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -304,15 +353,17 @@ export class SkillService {
   private createJob(
     source: SkillSource,
     target?: { skillId: string; baseVersionId: string },
+    projectId: string | null = null,
   ): SkillImportJob {
     if (this.stopped) throw new AppError('MAINTENANCE_MODE', '服务正在关闭', 503);
-    if (target) this.assertVersion(target.skillId, target.baseVersionId);
+    if (target) projectId = this.assertVersion(target.skillId, target.baseVersionId).projectId;
+    if (projectId) this.assertProject(projectId);
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction((db) =>
       db
         .prepare(
-          'INSERT INTO skill_import_jobs(id,type,skill_id,base_version_id,status,source_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+          'INSERT INTO skill_import_jobs(id,type,skill_id,base_version_id,status,source_json,created_at,updated_at,project_id) VALUES(?,?,?,?,?,?,?,?,?)',
         )
         .run(
           id,
@@ -323,6 +374,7 @@ export class SkillService {
           JSON.stringify(source),
           now,
           now,
+          projectId,
         ),
     );
     return this.job(id);
@@ -334,11 +386,14 @@ export class SkillService {
     if (!row) throw new AppError('NOT_FOUND', '导入任务不存在', 404);
     return job(row);
   }
-  jobs() {
+  jobs(filter: SkillListFilter = {}) {
+    const where = this.filter(filter);
     return (
       this.db
-        .prepare('SELECT * FROM skill_import_jobs ORDER BY created_at DESC, id DESC LIMIT 50')
-        .all() as Row[]
+        .prepare(
+          `SELECT * FROM skill_import_jobs WHERE ${where.sql} ORDER BY created_at DESC, id DESC LIMIT 50`,
+        )
+        .all(...where.params) as Row[]
     ).map(job);
   }
   private state(id: string, status: SkillImportJob['status'], error: string | null = null) {
@@ -387,6 +442,7 @@ export class SkillService {
             manifest,
             input.source,
             job.id,
+            job.projectId,
           );
         });
       } catch (error) {
@@ -413,15 +469,20 @@ export class SkillService {
     files: SkillInputFile[],
     label: string,
     target?: { skillId: string; baseVersionId: string },
+    projectId: string | null = null,
   ) {
     files = validateFiles(files);
     if (this.tasks.size >= 2)
       throw new AppError('PROJECT_BUSY', '最多同时导入两个 Skill，请稍后重试', 409);
     const source = localSource(label.slice(0, 200));
-    const job = this.createJob(source, target);
+    const job = this.createJob(source, target, projectId);
     return this.launch(job, async () => ({ files, source }));
   }
-  importGit(input: GitImport, target?: { skillId: string; baseVersionId: string }) {
+  importGit(
+    input: GitImport,
+    target?: { skillId: string; baseVersionId: string },
+    projectId: string | null = null,
+  ) {
     if (input.subdir) safeSkillPath(input.subdir);
     if (this.tasks.size >= 2)
       throw new AppError('PROJECT_BUSY', '最多同时导入两个 Skill，请稍后重试', 409);
@@ -431,7 +492,7 @@ export class SkillService {
       commit: null,
       subdir: input.subdir,
     };
-    const job = this.createJob(source, target);
+    const job = this.createJob(source, target, projectId);
     return this.launch(job, async (signal) => {
       this.state(job.id, 'fetching');
       const result = await this.readGit(input, signal);

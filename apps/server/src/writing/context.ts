@@ -17,6 +17,7 @@ import {
 import { AppError } from '../errors.js';
 import type { NovelService } from '../services/novels.js';
 import type { SkillService } from '../services/skills.js';
+import { estimateTokens } from './estimate.js';
 import type { AgentPromptService } from './prompt.js';
 import type { ProviderService } from './providers.js';
 
@@ -122,7 +123,8 @@ export class ContextService {
     const provider = this.providers.get(input.providerConfigId);
     if (provider.config.modelId !== input.modelId)
       throw new AppError('VALIDATION_ERROR', '模型必须与配置一致', 400);
-    const skills = options?.skills ?? this.skills.catalog(input.skillVersionId);
+    const skills =
+      options?.skills ?? this.skills.catalog(input.skillVersionId, input.projectId ?? undefined);
     const target = input.target
       ? this.novels.assertVersion(input.target.documentId, input.target.baseVersionId)
       : null;
@@ -420,7 +422,7 @@ ${JSON.stringify(skills)}`,
     const limit = Math.floor(provider.config.connection.contextWindow * 0.85) - output;
     const estimate = () => {
       setMessage();
-      return Buffer.byteLength(JSON.stringify(request), 'utf8');
+      return estimateTokens(request);
     };
     for (const source of ranked.filter((source) => pinned.has(source.version.id))) {
       const selection =

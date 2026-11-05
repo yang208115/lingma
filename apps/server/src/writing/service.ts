@@ -23,6 +23,7 @@ import type { SkillService } from '../services/skills.js';
 import { WorkflowService } from '../workflows/service.js';
 import { actualActions } from './actions.js';
 import { ContextService, digest, stable } from './context.js';
+import { estimateTokens } from './estimate.js';
 import { AgentPromptService } from './prompt.js';
 import { ProviderService } from './providers.js';
 import { SqlLoopRecorder } from './recorder.js';
@@ -128,7 +129,7 @@ export class WritingService {
         });
         if (stable(upgradedTools) !== stable(preview.request.toolDefinitions)) {
           preview.request.toolDefinitions = upgradedTools;
-          preview.estimatedInputTokens = Buffer.byteLength(JSON.stringify(preview.request), 'utf8');
+          preview.estimatedInputTokens = estimateTokens(preview.request);
           preview.hash = digest(
             stable(
               Object.fromEntries(Object.entries(preview).filter(([field]) => field !== 'hash')),
@@ -223,7 +224,7 @@ export class WritingService {
         async *stream(request, signal) {
           // Count every adapter request before contacting a provider, including failed attempts.
           service.workflows.reserveCall(id);
-          if (Buffer.byteLength(JSON.stringify(request), 'utf8') > preview.inputLimit)
+          if (estimateTokens(request) > preview.inputLimit)
             throw new AgentError('CONTEXT_TOO_LARGE');
           yield* adapter.stream(request, signal);
         },

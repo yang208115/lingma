@@ -5465,3 +5465,398 @@ summary:focus-visible {
     grid-template-columns: 56px minmax(0, 1fr);
   }
 }
+
+/* Execution mode menus render above the composer without native optgroup styling. */
+.chat-options .execution-mode-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: min(100%, 190px);
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #b3afc0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.execution-mode-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-mode-trigger > svg {
+  flex-shrink: 0;
+}
+.chat-options .execution-mode-trigger:hover,
+.chat-options .execution-mode-trigger[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+.execution-mode-menu {
+  z-index: 1600;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid #48434f;
+  border-radius: 12px;
+  background: #26262d;
+  color: #e4e3e8;
+  box-shadow:
+    0 12px 40px #0006,
+    0 2px 8px #0003;
+  scrollbar-width: thin;
+}
+.execution-mode-menu-heading {
+  padding: 6px 9px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d7d1e5;
+}
+.execution-mode-group {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid #3b3842;
+}
+.execution-mode-group-label {
+  padding: 5px 9px 3px;
+  color: #a9a1b7;
+  font-size: 11px;
+}
+.execution-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #e4e3e8;
+  text-align: left;
+  line-height: 1.5;
+}
+.execution-mode-option:hover,
+.execution-mode-option:focus-visible {
+  background: #34303e;
+  outline-offset: -2px;
+}
+.execution-mode-option[aria-checked="true"] {
+  background: #3a324c;
+  color: #ddcffb;
+}
+.execution-mode-icon {
+  display: inline-flex;
+  color: #b9a6dc;
+  flex-shrink: 0;
+}
+.execution-mode-option-copy {
+  flex: 1;
+  min-width: 0;
+}
+.execution-mode-option-copy > strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.execution-mode-option-copy > small {
+  display: block;
+  margin-top: 2px;
+  color: #aaa3b6;
+  font-size: 11px;
+}
+.execution-mode-version {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #ffffff08;
+  color: #afa6bf;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.execution-mode-check {
+  color: #cdb5f8;
+  flex-shrink: 0;
+}
+
+.element-workflow-selector {
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  flex-wrap: nowrap;
+}
+.element-workflow-selector > span {
+  font-size: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.element-workflow-selector .execution-mode-trigger {
+  max-width: calc(100% - 65px);
+}
+.element-workflow-scope {
+  margin: 4px 0 12px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.element-workflow-scope > button {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+.element-workflow-scope > button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--selected);
+}
+.element-workflow-scope > p {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+}
+.element-workflow-history {
+  margin: 14px 0;
+  min-width: 0;
+}
+.assistant-workflow-candidate-group {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 12px;
+}
+.assistant-workflow-candidate-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.assistant-workflow-candidate-group > header > strong {
+  font-size: 13px;
+  color: var(--accent);
+}
+.assistant-workflow-candidate-group > header > button {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.workflow-plan-box {
+  max-height: 22rem;
+  overflow: auto;
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #45434d);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.assistant-workflow-card textarea[aria-label="编辑章纲"] {
+  max-height: 22rem;
+  min-height: 12rem;
+}
+.workflow-content-fields {
+  margin: 0;
+}
+.workflow-content-fields > div {
+  margin: 0 0 0.6rem;
+}
+.workflow-content-fields dt {
+  font-weight: 600;
+  color: var(--muted);
+}
+.workflow-content-fields dt::after {
+  content: "：";
+}
+.workflow-content-fields dd {
+  margin: 0.15rem 0 0 1.25rem;
+  white-space: pre-wrap;
+}
+.workflow-content-list {
+  margin: 0.15rem 0;
+  padding-inline-start: 1.5rem;
+}
+.workflow-content-list > li {
+  margin: 0.25rem 0;
+}
+.editor-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 12px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border, #45434d);
+  scrollbar-width: thin;
+}
+.editor-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 220px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+}
+.editor-tab > button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  padding: 8px 6px 8px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.editor-tab > .editor-tab-close {
+  padding: 2px 6px;
+  margin-right: 4px;
+  border-radius: 4px;
+  line-height: 1;
+  opacity: 0.6;
+}
+.editor-tab > .editor-tab-close:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+.editor-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent, #8b7cf6);
+}
+.editor-tab.is-ai > button:first-child::before {
+  content: "✦ ";
+}
+.is-plan-view > :not(.editor-tabs):not(.editor-plan-preview):not(.editor-start-page) {
+  display: none;
+}
+.editor-plan-preview {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 24px 32px 64px;
+}
+.editor-tab-add {
+  flex: 0 0 auto;
+  align-self: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.editor-tab-add:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.editor-start-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px;
+}
+.editor-start-page ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+.editor-start-page li button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.editor-start-page li button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.editor-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  height: 38px;
+  box-sizing: border-box;
+  background: var(--bg);
+}
+.writing-area .editor-tabs ~ .editor-toolbar {
+  top: 38px;
+}
+.editor-start-page h2 {
+  margin: 0 0 1rem;
+  font-size: 18px;
+}
+.editor-start-page h3 {
+  margin: 1.25rem 0 0.4rem;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.editor-start-page .start-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.editor-start-page .start-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--border, #45434d);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.editor-start-page li button small {
+  margin-left: 8px;
+  color: var(--muted);
+}
+.workflow-node {
+  margin: 0.35rem 0;
+}
+.workflow-node.is-awaiting_gate > strong {
+  color: var(--accent);
+}
+.workflow-issue {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.workflow-issue.is-p0 {
+  border-left-color: var(--danger);
+}
+.workflow-issue.is-p1 {
+  border-left-color: var(--accent);
+}
+.workflow-issue blockquote {
+  margin: 0.4rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+.workflow-issue .workflow-actions input {
+  flex: 1;
+  min-width: 10rem;
+}
+.workflow-run-graph .workflow-graph-canvas {
+  height: 360px;
+}
+.workflow-graph-node.run-running {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.workflow-graph-node.run-awaiting_gate {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+.workflow-graph-node.run-released {
+  border-color: #6eaf8c;
+}
+.workflow-graph-node.run-failed,
+.workflow-graph-node.run-limited,
+.workflow-graph-node.run-interrupted {
+  border-color: var(--danger);
+}
+.workflow-graph-node.run-stale,
+.workflow-graph-node.run-skipped {
+  opacity: 0.5;
+}

@@ -490,7 +490,7 @@ test('writing continues in the background after switching pages and returns to t
     })
     .not.toBe('');
   const navigation = page.getByRole('navigation', { name: '页面导航' });
-  await navigation.getByRole('link', { name: 'Skill 管理', exact: true }).click();
+  await navigation.getByRole('link', { name: '通用 Skill', exact: true }).click();
   await expect(page).toHaveURL('/skills');
   await navigation.getByRole('link', { name: '写作', exact: true }).click();
   await expect(page.getByText('运行状态：已完成', { exact: true })).toBeVisible();

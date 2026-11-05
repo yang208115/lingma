@@ -181,9 +181,6 @@ export class SqlLoopRecorder implements LoopRecorder {
       db.prepare(
         "UPDATE outline_creation_proposals SET status='pending' WHERE run_id=? AND turn_index=? AND status='staged'",
       ).run(this.id, turn.turnIndex);
-      db.prepare(
-        "UPDATE workflow_artifacts SET status='committed' WHERE run_id=? AND turn_index=? AND status='staged'",
-      ).run(this.id, turn.turnIndex);
       for (const event of turn.events) this.store.append(event);
     });
   }

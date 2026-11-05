@@ -27,6 +27,7 @@ import {
 import type { z } from 'zod';
 import { AppError } from '../errors.js';
 import { digest, stable } from '../writing/context.js';
+import { estimateTokens } from '../writing/estimate.js';
 import type { WritingService } from '../writing/service.js';
 import { active, decode, emptyUsage, now, type Row } from '../writing/store.js';
 
@@ -744,7 +745,7 @@ export class ElementService {
         }),
       },
     ];
-    if (Buffer.byteLength(JSON.stringify(request), 'utf8') > snapshot.preview.inputLimit)
+    if (estimateTokens(request) > snapshot.preview.inputLimit)
       throw new AppError(
         'CONTEXT_TOO_LARGE',
         '要素、上游候选或引用资料超过模型预算，请缩小范围',

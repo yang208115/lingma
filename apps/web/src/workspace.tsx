@@ -46,6 +46,7 @@ import { ProjectLibrary } from './components/ProjectLibrary.js';
 import { ProposalDiff } from './components/ProposalDiff.js';
 import { StoryEventDetails } from './components/StoryEventDetails.js';
 import { StructureDialog } from './components/StructureDialog.js';
+import { WorkflowContent } from './components/WorkflowContent.js';
 import { WritingPanel } from './components/WritingPanel.js';
 import { WritingEditor } from './editor/WritingEditor.js';
 import { elementApi } from './element-api.js';
@@ -240,6 +241,19 @@ export function Workspace() {
   }, []);
   const [writingReview, setWritingReview] = useState<Proposal | null>(null);
   const [reviewReveal, setReviewReveal] = useState(0);
+  const [showReview, setShowReview] = useState(true);
+  const [planPreview, setPlanPreview] = useState<{
+    runId: string;
+    title: string;
+    content: string;
+    label: string;
+  } | null>(null);
+  const [showPlan, setShowPlan] = useState(false);
+  const [blankTab, setBlankTab] = useState<'closed' | 'open' | 'active'>('closed');
+  const [openTabs, setOpenTabs] = useState<{ projectId: string; ids: string[] }>({
+    projectId,
+    ids: [],
+  });
   const [proposalRefresh, setProposalRefresh] = useState(0);
   const [planningConfirmation, setPlanningConfirmation] = useState<{
     documentId: string;
@@ -269,7 +283,37 @@ export function Workspace() {
     };
   }, [documentId, selected?.kind, draft?.baseVersionId]);
   const announcedProposals = useRef({ runId: null as string | null, seen: new Set<string>() });
-  const activeReview = writingReview?.targetDocumentId === selected?.id ? writingReview : null;
+  const activeReview =
+    showReview && writingReview?.targetDocumentId === selected?.id ? writingReview : null;
+  useEffect(() => {
+    if (!documentId || !currentStructure) return;
+    setOpenTabs((old) => {
+      const ids = old.projectId === projectId ? old.ids : [];
+      return ids.includes(documentId) ? old : { projectId, ids: [...ids, documentId] };
+    });
+  }, [documentId, projectId, currentStructure]);
+  const tabDocuments = (openTabs.projectId === projectId ? openTabs.ids : [])
+    .map((id) => currentStructure?.documents.find((item) => item.id === id && !item.deletedAt))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const reviewTarget = writingReview
+    ? currentStructure?.documents.find((item) => item.id === writingReview.targetDocumentId)
+    : undefined;
+  function selectTab(id: string) {
+    if (id === documentId && !activeReview && !showPlan && blankTab !== 'active') return;
+    setShowReview(false);
+    setShowPlan(false);
+    if (blankTab === 'active') setBlankTab('open');
+    chooseDocument(id, true);
+  }
+  function closeTab(id: string) {
+    const rest = tabDocuments.filter((item) => item.id !== id);
+    setOpenTabs({ projectId, ids: rest.map((item) => item.id) });
+    if (id === documentId && rest.length) {
+      const index = tabDocuments.findIndex((item) => item.id === id);
+      const next = rest[index] ?? rest[index - 1] ?? rest[0];
+      if (next) selectTab(next.id);
+    }
+  }
   useEffect(() => {
     if (
       workspaceView !== 'information' &&
@@ -293,6 +337,7 @@ export function Workspace() {
   const openWritingReview = useCallback(
     (proposal: Proposal) => {
       setWritingReview(proposal);
+      setShowReview(true);
       setReviewReveal((value) => value + 1);
       setDocumentId(proposal.targetDocumentId);
       setError('');
@@ -408,8 +453,8 @@ export function Workspace() {
     setError('');
     setDialog(action);
   }
-  function chooseDocument(id: string) {
-    setWritingReview(null);
+  function chooseDocument(id: string, keepReview = false) {
+    if (!keepReview) setWritingReview(null);
     setDocumentId(id);
     setError('');
     const target = currentStructure?.documents.find((document) => document.id === id);
@@ -419,7 +464,8 @@ export function Workspace() {
     } else if (target?.kind === 'foreshadow') {
       setOutlineSection('foreshadow');
       setWorkspaceView('outline');
-    } else if (target && isBasicInformationKind(target.kind)) setWorkspaceView('information');
+    } else if (target?.kind === 'chapter') setWorkspaceView('writing');
+    else if (target && isBasicInformationKind(target.kind)) setWorkspaceView('information');
   }
   function openWriting(id?: string) {
     if (!currentStructure) return;
@@ -736,9 +782,207 @@ export function Workspace() {
                 className="writing-area"
                 aria-label={showingOutline ? '大纲编辑区' : '正文编辑区'}
               >
-                <div>
+                <div
+                  className={
+                    blankTab === 'active' || (showPlan && planPreview) ? 'is-plan-view' : undefined
+                  }
+                >
                   {selected && draft ? (
                     <>
+                      <div className="editor-tabs" role="tablist" aria-label="已打开文档">
+                        {tabDocuments.map((item) => (
+                          <span
+                            key={item.id}
+                            className={`editor-tab${item.id === documentId && !activeReview && !showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={
+                                item.id === documentId &&
+                                !activeReview &&
+                                !showPlan &&
+                                blankTab !== 'active'
+                              }
+                              title={item.title}
+                              onClick={() => selectTab(item.id)}
+                            >
+                              {item.title}
+                            </button>
+                            {tabDocuments.length > 1 && (
+                              <button
+                                type="button"
+                                className="editor-tab-close"
+                                aria-label={`关闭 ${item.title}`}
+                                onClick={() => closeTab(item.id)}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                        {planPreview && (
+                          <span
+                            className={`editor-tab is-ai${showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={showPlan}
+                              title={`${planPreview.label}：${planPreview.title}`}
+                              onClick={() => {
+                                setBlankTab((value) => (value === 'active' ? 'open' : value));
+                                setShowPlan(true);
+                              }}
+                            >
+                              {planPreview.label}
+                            </button>
+                            <button
+                              type="button"
+                              className="editor-tab-close"
+                              aria-label={`关闭${planPreview.label}`}
+                              onClick={() => {
+                                setPlanPreview(null);
+                                setShowPlan(false);
+                              }}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )}
+                        {writingReview && (
+                          <span
+                            className={`editor-tab is-ai${activeReview && !showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={Boolean(activeReview)}
+                              title={`AI 输出预览：${reviewTarget?.title ?? ''}`}
+                              onClick={() => {
+                                setShowPlan(false);
+                                setShowReview(true);
+                                setReviewReveal((value) => value + 1);
+                                chooseDocument(writingReview.targetDocumentId, true);
+                              }}
+                            >
+                              AI 输出预览
+                            </button>
+                            <button
+                              type="button"
+                              className="editor-tab-close"
+                              aria-label="关闭 AI 输出预览"
+                              onClick={() => setWritingReview(null)}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )}
+                        {blankTab !== 'closed' && (
+                          <span
+                            className={`editor-tab${blankTab === 'active' ? ' is-active' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={blankTab === 'active'}
+                              onClick={() => setBlankTab('active')}
+                            >
+                              新标签页
+                            </button>
+                            <button
+                              type="button"
+                              className="editor-tab-close"
+                              aria-label="关闭新标签页"
+                              onClick={() => setBlankTab('closed')}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="editor-tab-add"
+                          aria-label="打开新标签页"
+                          title="打开新标签页"
+                          onClick={() => setBlankTab('active')}
+                        >
+                          +
+                        </button>
+                      </div>
+                      {blankTab === 'active' && currentStructure && (
+                        <section className="editor-start-page" aria-label="新标签页">
+                          <h2>{currentStructure.project.title}</h2>
+                          <h3>快速开始</h3>
+                          <div className="start-actions">
+                            <button type="button" onClick={() => createChapter()}>
+                              新建章节
+                            </button>
+                            <button type="button" onClick={() => createOutline('chapter_outline')}>
+                              新建故事事件
+                            </button>
+                            {planPreview && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBlankTab('open');
+                                  setShowPlan(true);
+                                }}
+                              >
+                                查看{planPreview.label}
+                              </button>
+                            )}
+                          </div>
+                          {tabDocuments.length > 0 && (
+                            <>
+                              <h3>已打开</h3>
+                              <ul>
+                                {tabDocuments.map((item) => (
+                                  <li key={item.id}>
+                                    <button type="button" onClick={() => selectTab(item.id)}>
+                                      {item.title}
+                                      <small>{kindNames[item.kind]}</small>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                          {[
+                            { label: '章节', items: orderedChapters(currentStructure) },
+                            {
+                              label: '大纲与事件',
+                              items: currentStructure.documents.filter(
+                                (item) =>
+                                  !item.archived &&
+                                  !item.deletedAt &&
+                                  (item.kind === 'master_outline' || isStoryEventKind(item.kind)),
+                              ),
+                            },
+                          ].map((group) => (
+                            <div key={group.label}>
+                              <h3>
+                                {group.label} · {group.items.length}
+                              </h3>
+                              {group.items.length === 0 && <p className="muted">暂无</p>}
+                              <ul>
+                                {group.items.map((item) => (
+                                  <li key={item.id}>
+                                    <button type="button" onClick={() => selectTab(item.id)}>
+                                      {item.title}
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </section>
+                      )}
+                      {showPlan && planPreview && blankTab !== 'active' && (
+                        <section className="editor-plan-preview" aria-label={planPreview.label}>
+                          <WorkflowContent text={planPreview.content} />
+                        </section>
+                      )}
                       <div className={`editor-toolbar${activeReview ? ' is-review' : ''}`}>
                         <span className="editor-context">
                           <FileText size={14} aria-hidden="true" />
@@ -1242,6 +1486,10 @@ export function Workspace() {
                   }}
                   onProposalsChange={updateWritingProposals}
                   onReviewProposal={openWritingReview}
+                  onPreviewPlan={(preview) => {
+                    setPlanPreview(preview);
+                    setShowPlan(true);
+                  }}
                   onOutlinesCreated={async (id, outlineId) => {
                     const created = await api.document(outlineId);
                     await refreshStructure(id);

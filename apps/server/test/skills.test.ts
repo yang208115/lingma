@@ -13,6 +13,7 @@ import { loadConfig } from '../src/config.js';
 import { createApp } from '../src/http/app.js';
 import { createLogger } from '../src/logger.js';
 import { openRuntime, type Runtime } from '../src/runtime.js';
+import { NovelService } from '../src/services/novels.js';
 import { SkillService } from '../src/services/skills.js';
 import type { GitReader } from '../src/skills/git.js';
 import { gitReader } from '../src/skills/git.js';
@@ -522,6 +523,143 @@ describe('public Git isolation', () => {
 });
 
 describe('Skill failure and lifecycle regression', () => {
+  it('isolates project lists, pagination, jobs and pinned catalogs while retaining general skills', async () => {
+    const { skills, runtime, app } = await fixture();
+    const novels = new NovelService(runtime.db);
+    const first = novels.createProject('项目一');
+    const second = novels.createProject('项目二');
+    const general = await imported(skills);
+    const local = skills.importLocal(files(), '项目一规则', undefined, first.id);
+    const git = skills.importGit(
+      { repository: 'https://example.com/x.git', subdir: '' },
+      undefined,
+      second.id,
+    );
+    await skills.idle();
+    const own = skills.detail(skills.job(local.id).skillId as string);
+    const other = skills.detail(skills.job(git.id).skillId as string);
+    expect(general.skill.projectId).toBeNull();
+    expect(own.skill.projectId).toBe(first.id);
+    expect(other.skill.projectId).toBe(second.id);
+    expect(skills.list(200).data.map((s) => s.id)).toEqual([general.skill.id]);
+    expect(
+      skills.list(200, undefined, { scope: 'project', projectId: first.id }).data.map((s) => s.id),
+    ).toEqual([own.skill.id]);
+    const available = skills.list(1, undefined, { projectId: first.id });
+    expect(available.nextCursor).not.toBeNull();
+    const rest = skills.list(1, available.nextCursor as string, { projectId: first.id });
+    expect([...available.data, ...rest.data].map((s) => s.id).sort()).toEqual(
+      [general.skill.id, own.skill.id].sort(),
+    );
+    expect(rest.nextCursor).toBeNull();
+    expect(skills.jobs({ scope: 'project', projectId: first.id }).map((j) => j.id)).toEqual([
+      local.id,
+    ]);
+    expect(
+      skills
+        .catalog(undefined, first.id)
+        .map((s) => s.skillId)
+        .sort(),
+    ).toEqual([general.skill.id, own.skill.id].sort());
+    expect(() => skills.catalog(other.version.id, first.id)).toThrow('不属于当前项目');
+    expect(() => skills.catalog(own.version.id)).toThrow('不属于当前项目');
+    const response = await app.request(
+      `http://localhost/api/v1/skills?scope=project&projectId=${first.id}`,
+    );
+    expect((await response.json()).data).toEqual([own.skill]);
+    expect((await app.request('http://localhost/api/v1/skills?scope=project')).status).toBe(400);
+    expect(
+      (await app.request(`http://localhost/api/v1/skills?projectId=${randomUUID()}`)).status,
+    ).toBe(404);
+  });
+  it('imports through scoped multipart and Git APIs, changes ownership and preserves immutable history', async () => {
+    const { skills, runtime, app } = await fixture();
+    const project = new NovelService(runtime.db).createProject('专属项目');
+    const form = new FormData();
+    form.append('files', new File(['# 项目规则'], 'SKILL.md'));
+    form.set('paths', JSON.stringify(['SKILL.md']));
+    form.set('projectId', project.id);
+    const upload = await app.request('http://localhost/api/v1/skills/import/local', {
+      method: 'POST',
+      body: form,
+    });
+    expect(upload.status).toBe(202);
+    const task = (await upload.json()).data;
+    await skills.idle();
+    const original = skills.detail(skills.job(task.id).skillId as string);
+    const updated = await skills.save(original.skill.id, original.version.id, '# 新项目规则');
+    expect(updated.skill.projectId).toBe(project.id);
+    const move = await app.request(`http://localhost/api/v1/skills/${original.skill.id}/scope`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: null, baseVersionId: updated.version.id }),
+    });
+    expect(move.status).toBe(200);
+    expect((await move.json()).data.skill.projectId).toBeNull();
+    expect(skills.snapshot(original.version.id)).toEqual(original.version);
+    expect(skills.snapshot(updated.version.id)).toEqual(updated.version);
+    expect(skills.jobs().find((j) => j.id === task.id)?.projectId).toBeNull();
+    expect(() => skills.changeScope(original.skill.id, original.version.id, project.id)).toThrow(
+      '已更新',
+    );
+    const gitUpload = await app.request('http://localhost/api/v1/skills/import/git', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repository: 'https://example.com/x.git',
+        subdir: '',
+        projectId: project.id,
+      }),
+    });
+    expect(gitUpload.status).toBe(202);
+    const gitJob = (await gitUpload.json()).data;
+    await skills.idle();
+    const gitSkill = skills.get(skills.job(gitJob.id).skillId as string);
+    expect(gitSkill.projectId).toBe(project.id);
+    skills.updateGit(gitSkill.id, gitSkill.currentVersionId);
+    await skills.idle();
+    expect(skills.get(gitSkill.id).projectId).toBe(project.id);
+    expect(() => skills.importLocal(files(), 'missing', undefined, randomUUID())).toThrow(
+      '项目不存在',
+    );
+  });
+  it('prevents changing scope during a source update and rejects publication to a deleted project', async () => {
+    let release: (() => void) | undefined;
+    const { skills, runtime } = await fixture(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { commit: 'b'.repeat(40), files: files() };
+    });
+    const project = new NovelService(runtime.db).createProject('待删除项目');
+    const first = await imported(skills);
+    skills.importLocal(files(), 'update', {
+      skillId: first.skill.id,
+      baseVersionId: first.version.id,
+    });
+    expect(() => skills.changeScope(first.skill.id, first.version.id, project.id)).toThrow(
+      '正在更新',
+    );
+    await skills.idle();
+    const job = skills.importGit(
+      { repository: 'https://example.com/x.git', subdir: '' },
+      undefined,
+      project.id,
+    );
+    runtime.db.transaction((db) =>
+      db
+        .prepare('UPDATE projects SET deleted_at=? WHERE id=?')
+        .run(new Date().toISOString(), project.id),
+    );
+    release?.();
+    await skills.idle();
+    expect(skills.job(job.id)).toMatchObject({
+      status: 'failed',
+      projectId: project.id,
+      skillId: null,
+    });
+    expect(skills.list(200).data).toHaveLength(1);
+  });
   it('replaces a local directory with a complete new manifest while retaining the previous snapshot', async () => {
     const { skills, app } = await fixture();
     const first = await imported(skills);

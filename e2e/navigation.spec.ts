@@ -37,6 +37,23 @@ async function fixture(request: APIRequestContext, format: 'short' | 'long' = 's
 }
 const nav = (page: Page) => page.getByRole('navigation', { name: '页面导航' });
 
+test('removes the standalone collaboration entry and redirects old project links to writing', async ({
+  page,
+  request,
+}) => {
+  const { project, document, url } = await fixture(request);
+  await page.goto(`/projects/${project.id}/workflows?document=${document.id}`);
+  await expect(page).toHaveURL(url);
+  await expect(page.getByLabel('文档正文', { exact: true })).toBeVisible();
+  await expect(nav(page).getByRole('link', { name: '协作写作', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '协作写作工作台' })).toHaveCount(0);
+  await nav(page).getByRole('link', { name: 'Agent 角色库', exact: true }).click();
+  await expect(
+    page.getByRole('navigation', { name: '协作创作功能' }).getByRole('link'),
+  ).toHaveCount(2);
+  await expect(page.getByRole('link', { name: '协作写作', exact: true })).toHaveCount(0);
+});
+
 test('every major module has a refreshable address and legacy URLs preserve document selection', async ({
   page,
   request,
@@ -48,14 +65,14 @@ test('every major module has a refreshable address and legacy URLs preserve docu
   await page.screenshot({ path: testInfo.outputPath('multi-page-writing.png'), fullPage: true });
   for (const [label, path] of [
     ['作品管理', '/projects'],
-    ['Skill 管理', '/skills'],
+    ['通用 Skill', '/skills'],
+    ['项目 Skill', `/projects/${project.id}/skills`],
     ['Agent 角色库', '/agents'],
     ['工作流模板', '/workflow-templates'],
     ['模型设置', '/settings/models'],
     ['Agent 提示词', '/settings/agent-prompt'],
     ['大纲', `/projects/${project.id}/outline`],
     ['基本信息', `/projects/${project.id}/information`],
-    ['协作写作', `/projects/${project.id}/workflows`],
   ] as const) {
     await nav(page).getByRole('link', { name: label, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`${path?.replaceAll('/', '\\/')}(?:\\?|$)`));
@@ -84,7 +101,7 @@ test('navigation saves pending text, preserves the composer and supports back an
   await page.goto(url);
   await page.getByLabel('文档正文', { exact: true }).fill('切页前刚输入的新稿');
   await page.getByLabel('写作任务').fill('还没发送的创作要求');
-  await nav(page).getByRole('link', { name: 'Skill 管理', exact: true }).click();
+  await nav(page).getByRole('link', { name: '通用 Skill', exact: true }).click();
   await expect(page).toHaveURL('/skills');
   const saved = (await (await request.get(`/api/v1/documents/${document.id}`)).json()).data;
   expect(saved.version.content).toBe('切页前刚输入的新稿');
@@ -127,7 +144,7 @@ test('manual configuration edits guard links and browser back with cancel and di
   await prompt.getByRole('button', { name: '留在此页' }).click();
   await expect(page).toHaveURL('/settings/models');
   await expect(page.getByLabel('配置名称', { exact: true })).toHaveValue('尚未保存的模型');
-  await nav(page).getByRole('link', { name: 'Skill 管理', exact: true }).click();
+  await nav(page).getByRole('link', { name: '通用 Skill', exact: true }).click();
   await prompt.getByRole('button', { name: '放弃修改并离开' }).click();
   await expect(page).toHaveURL('/skills');
 });

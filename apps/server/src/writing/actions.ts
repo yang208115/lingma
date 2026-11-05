@@ -7,6 +7,19 @@ import { canCreateChapters, canCreateOutlines, canPropose, entry, relevance } fr
 import { stageOutlineCreation } from './outlines.js';
 import { decode, type Row, type WritingStore } from './store.js';
 
+const metadataLimit = 4000;
+/** Read results carry metadata for context; oversized blobs are dropped so one read cannot exhaust the budget. */
+function boundedMetadata<T extends Record<string, unknown>>(
+  metadata: T,
+): T | Record<string, string> {
+  const size = JSON.stringify(metadata).length;
+  return size <= metadataLimit
+    ? metadata
+    : {
+        omitted: `元数据共 ${size} 字符，超过 ${metadataLimit}，已省略；请用文档范围读取需要的内容`,
+      };
+}
+
 export function actualActions(
   store: WritingStore,
   runId: string,
@@ -170,7 +183,7 @@ export function actualActions(
           versionId: version.id,
           excerpt: result.excerpt,
           contentHash: version.contentHash,
-          metadata: version.metadata,
+          metadata: boundedMetadata(version.metadata),
           from,
           to,
           truncated: to < requestedTo,
@@ -208,7 +221,7 @@ export function actualActions(
                     versionId: found.version.id,
                     excerpt: result.excerpt,
                     contentHash: found.version.contentHash,
-                    metadata: found.version.metadata,
+                    metadata: boundedMetadata(found.version.metadata),
                   };
                 });
               return { matches };

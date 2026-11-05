@@ -14,6 +14,7 @@ import {
 import { api } from './api.js';
 import { ProjectWorkspaceProvider, useProjectWorkspace } from './project-context.js';
 import { RuntimeProvider, useRuntime } from './runtime.js';
+import { workflowApi } from './workflow-api.js';
 
 const Workspace = lazy(() =>
   import('./workspace.js').then((module) => ({ default: module.Workspace })),
@@ -38,8 +39,7 @@ const titles: Record<string, string> = {
   writing: '写作',
   outline: '大纲',
   information: '基本信息',
-  workflows: '协作写作',
-  skills: 'Skill 管理',
+  skills: '通用 Skill',
   agents: 'Agent 角色库',
   'workflow-templates': '工作流模板',
   models: '模型设置',
@@ -130,7 +130,7 @@ function AppShell() {
   const section = location.pathname.split('/').filter(Boolean).at(-1) ?? 'projects';
   // biome-ignore lint/correctness/useExhaustiveDependencies: Close the mobile drawer on every successful navigation.
   useEffect(() => {
-    document.title = `${titles[section] ?? '未找到页面'} · 灵码`;
+    document.title = `${section === 'skills' && location.pathname.startsWith('/projects/') ? '项目 Skill' : (titles[section] ?? '未找到页面')} · 灵码`;
     setDrawer(false);
   }, [section, location.key]);
   const current = projects.find((project) => project.id === projectId);
@@ -204,7 +204,9 @@ function AppShell() {
                       /^\/projects\//.test(location.pathname) ||
                       location.pathname === '/projects'
                     )
-                      navigate(`/projects/${id}/writing`);
+                      navigate(
+                        `/projects/${id}/${location.pathname.endsWith('/skills') ? 'skills' : 'writing'}`,
+                      );
                     else navigate(`${location.pathname}?${new URLSearchParams({ project: id })}`);
                   }}
                 >
@@ -229,8 +231,8 @@ function AppShell() {
                       ◇ <span>基本信息</span>
                     </NavLink>
                   )}
-                  <NavLink aria-label="协作写作" to={projectLink('workflows')}>
-                    ⇄ <span>协作写作</span>
+                  <NavLink aria-label="项目 Skill" to={projectLink('skills')}>
+                    ▤ <span>项目 Skill</span>
                   </NavLink>
                 </>
               ) : (
@@ -239,8 +241,8 @@ function AppShell() {
             </div>
             <div className="navigation-group">
               <p>创作工具</p>
-              <NavLink aria-label="Skill 管理" to="/skills">
-                ▤ <span>Skill 管理</span>
+              <NavLink aria-label="通用 Skill" to="/skills">
+                ▤ <span>通用 Skill</span>
               </NavLink>
               <NavLink aria-label="Agent 角色库" to={`/agents${context}`}>
                 ♙ <span>Agent 角色库</span>
@@ -310,6 +312,10 @@ function LegacyEntry() {
 }
 function ManagementPage({ kind }: { kind: 'skills' | 'models' | 'agent-prompt' }) {
   const navigate = useNavigate();
+  const { projectId } = useParams();
+  const { projects } = useProjects();
+  const project = useProjectWorkspace();
+  const title = kind === 'skills' && projectId ? '项目 Skill' : titles[kind];
   const close = () => {
     let destination = '/projects';
     try {
@@ -320,9 +326,25 @@ function ManagementPage({ kind }: { kind: 'skills' | 'models' | 'agent-prompt' }
     navigate(destination);
   };
   return (
-    <main className="management-page" aria-label={titles[kind]}>
+    <main className="management-page" aria-label={title}>
       {kind === 'skills' ? (
-        <SkillManager onClose={close} />
+        projectId && !project.structure ? (
+          project.error ? (
+            <div>
+              <p role="alert">无法打开项目：{project.error}</p>
+              <Link to="/projects">返回作品管理</Link>
+            </div>
+          ) : (
+            <p role="status">正在读取项目…</p>
+          )
+        ) : (
+          <SkillManager
+            key={projectId ?? 'general'}
+            projectId={projectId}
+            projects={projects}
+            onClose={close}
+          />
+        )
       ) : kind === 'models' ? (
         <ProviderManager onClose={close} />
       ) : (
@@ -331,32 +353,75 @@ function ManagementPage({ kind }: { kind: 'skills' | 'models' | 'agent-prompt' }
     </main>
   );
 }
-function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' | 'runs' }) {
-  const { projectId: routeProject } = useParams();
+function LegacyWorkflowRedirect() {
+  const { projectId = '' } = useParams();
+  const [params] = useSearchParams();
+  const requestedRun = params.get('run') ?? '';
+  const documentId = params.get('document') ?? '';
+  const [destination, setDestination] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!requestedRun) return;
+    let live = true;
+    setDestination('');
+    setError('');
+    void workflowApi
+      .run(requestedRun)
+      .then((run) => {
+        if (!live) return;
+        if (run.projectId !== projectId) throw new Error('运行记录不属于当前作品');
+        const query = new URLSearchParams({ workflow: run.id });
+        if (run.targetDocumentId || documentId)
+          query.set('document', run.targetDocumentId || documentId);
+        setDestination(`/projects/${projectId}/writing?${query}`);
+      })
+      .catch((cause: Error) => {
+        if (live) setError(cause.message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [projectId, requestedRun, documentId]);
+  if (!requestedRun)
+    return (
+      <Navigate
+        replace
+        to={`/projects/${projectId}/writing${documentId ? `?${new URLSearchParams({ document: documentId })}` : ''}`}
+      />
+    );
+  if (error)
+    return (
+      <main className="empty">
+        <p role="alert">无法打开运行记录：{error}</p>
+        <Link to={`/projects/${projectId}/writing`}>返回写作</Link>
+      </main>
+    );
+  return destination ? (
+    <Navigate replace to={destination} />
+  ) : (
+    <p role="status">正在打开运行记录…</p>
+  );
+}
+function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' }) {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const { projects } = useProjects();
   const { store } = useRuntime();
-  const projectId = routeProject ?? params.get('project') ?? '';
+  const projectId = params.get('project') ?? '';
   const documentId = params.get('document') ?? '';
-  const projectContext = useProjectWorkspace();
-  const [trialStructure, setTrialStructure] = useState<Structure | null>(null);
-  const structure = mode === 'runs' ? projectContext.structure : trialStructure;
-  const setStructure = mode === 'runs' ? projectContext.setStructure : setTrialStructure;
-  const [trialError, setError] = useState('');
-  const error = mode === 'runs' ? projectContext.error : trialError;
+  const [structure, setStructure] = useState<Structure | null>(null);
+  const [error, setError] = useState('');
   const [epoch, setEpoch] = useState(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: epoch explicitly retries a failed request.
   useEffect(() => {
-    if (mode === 'runs') return;
     let live = true;
-    setTrialStructure(null);
+    setStructure(null);
     setError('');
     if (projectId)
       void api
         .structure(projectId)
         .then((value) => {
-          if (live) setTrialStructure(value);
+          if (live) setStructure(value);
         })
         .catch((e: Error) => {
           if (live) setError(e.message);
@@ -364,7 +429,7 @@ function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' | 'runs' }) {
     return () => {
       live = false;
     };
-  }, [projectId, epoch, mode]);
+  }, [projectId, epoch]);
   const document = structure?.documents.find((item) => item.id === documentId);
   const update = (patch: Record<string, string>) =>
     setParams((previous) => {
@@ -382,8 +447,7 @@ function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' | 'runs' }) {
         <button
           type="button"
           onClick={() => {
-            if (mode === 'runs') void projectContext.refresh(projectId).catch(() => {});
-            else setEpoch((value) => value + 1);
+            setEpoch((value) => value + 1);
           }}
         >
           重试
@@ -409,11 +473,9 @@ function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' | 'runs' }) {
   return (
     <main
       className="management-page"
-      aria-label={
-        mode === 'profiles' ? 'Agent 角色库' : mode === 'templates' ? '工作流模板' : '协作写作'
-      }
+      aria-label={mode === 'profiles' ? 'Agent 角色库' : '工作流模板'}
     >
-      {mode !== 'templates' && (
+      {mode === 'profiles' && (
         <div className="workflow-context row">
           {mode === 'profiles' && (
             <label>
@@ -432,7 +494,7 @@ function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' | 'runs' }) {
             </label>
           )}
           <label>
-            {mode === 'profiles' ? '试运行章节' : '当前章节'}
+            试运行章节
             <select
               value={documentId}
               onChange={(event) => update({ document: event.target.value })}
@@ -462,10 +524,6 @@ function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' | 'runs' }) {
             if (store.isDirty(draft) || ['error', 'conflict'].includes(draft.status))
               throw new Error('请先处理未保存的正文草稿');
           }
-        }}
-        onApplied={async (id) => {
-          store.replace(await api.document(id));
-          setStructure(await api.structure(projectId));
         }}
         onClose={() => {
           navigate(
@@ -497,8 +555,9 @@ export const router = createBrowserRouter([
         path: `projects/:projectId/${view}`,
         element: <Workspace />,
       })),
-      { path: 'projects/:projectId/workflows', element: <WorkflowPage mode="runs" /> },
+      { path: 'projects/:projectId/workflows', element: <LegacyWorkflowRedirect /> },
       { path: 'skills', element: <ManagementPage kind="skills" /> },
+      { path: 'projects/:projectId/skills', element: <ManagementPage kind="skills" /> },
       { path: 'agents', element: <WorkflowPage mode="profiles" /> },
       { path: 'workflow-templates', element: <WorkflowPage mode="templates" /> },
       { path: 'settings', element: <Navigate to="models" replace /> },

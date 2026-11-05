@@ -29,9 +29,10 @@ export function useWorkspaceRoute() {
         const target = pending.current;
         pending.current = null;
         if (!target || !latest.current.projectId) return;
-        const search = target.documentId
-          ? `?${new URLSearchParams({ document: target.documentId })}`
-          : '';
+        const params = new URLSearchParams(latest.current.location.search);
+        if (target.documentId) params.set('document', target.documentId);
+        else params.delete('document');
+        const search = params.size ? `?${params}` : '';
         const url = `/projects/${latest.current.projectId}/${target.view}${search}`;
         if (url !== `${latest.current.location.pathname}${latest.current.location.search}`)
           void latest.current.navigate(url, {

@@ -10,6 +10,7 @@ import { AppError } from '../src/errors.js';
 import { createApp } from '../src/http/app.js';
 import { createLogger } from '../src/logger.js';
 import { openRuntime, type Runtime } from '../src/runtime.js';
+import { SkillService } from '../src/services/skills.js';
 import { MaintenanceGate } from '../src/storage/maintenance.js';
 import { AgentPromptService } from '../src/writing/prompt.js';
 
@@ -209,6 +210,47 @@ describe('database ownership and atomicity', () => {
       reopened.db.connection.prepare('SELECT title FROM projects WHERE id=?').get(projectId),
     ).toEqual({ title: '保留的作品' });
     expect(reopened.db.connection.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('migrates existing skills into the general library without altering their versions', async () => {
+    const config = await fixture();
+    const old = await openRuntime(config, { migrations: loadMigrations().slice(0, 18) });
+    runtimes.push(old);
+    const skillId = randomUUID();
+    const versionId = randomUUID();
+    old.db.transaction((db) => {
+      db.prepare(
+        "INSERT INTO skills(id,name,source_type,current_version_id) VALUES(?,?,'local',?)",
+      ).run(skillId, '旧规则', versionId);
+      db.prepare(
+        'INSERT INTO skill_versions(id,skill_id,version_no,entry_content,metadata_json,source_snapshot_json,manifest_hash,created_at) VALUES(?,?,1,?,?,?,?,?)',
+      ).run(
+        versionId,
+        skillId,
+        '# 旧规则',
+        '{}',
+        JSON.stringify({ type: 'local', ref: null, commit: null, subdir: null }),
+        'a'.repeat(64),
+        new Date().toISOString(),
+      );
+    });
+    const original = old.db.connection
+      .prepare('SELECT * FROM skill_versions WHERE id=?')
+      .get(versionId);
+    await old.close();
+    const upgraded = await openRuntime(config);
+    runtimes.push(upgraded);
+    const skills = new SkillService(upgraded.db, upgraded.blobs, upgraded.gate, async () => {
+      throw new Error('unused');
+    });
+    expect(skills.list(200).data).toMatchObject([
+      { id: skillId, projectId: null, currentVersionId: versionId },
+    ]);
+    expect(
+      upgraded.db.connection.prepare('SELECT * FROM skill_versions WHERE id=?').get(versionId),
+    ).toEqual(original);
+    expect(upgraded.db.connection.pragma('foreign_key_check')).toEqual([]);
+    await skills.close();
   });
 
   it('upgrades the original P05 migration without changing its checksum or losing citations', async () => {

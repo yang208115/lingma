@@ -10,6 +10,7 @@ import {
   elementFields,
   elementLabels,
   hasElementContent,
+  isBasicInformationKind,
   isElementKind,
   type ProviderConfig,
   type Structure,
@@ -23,8 +24,10 @@ import { elementApi } from '../element-api.js';
 import { useProjectProvider } from '../provider-selection.js';
 import { useLeaveGuard } from '../runtime.js';
 import { writingApi } from '../writing-api.js';
-import { AssistantWorkflowCard, useAssistantWorkflows } from './AssistantWorkflows.js';
+import { AssistantWorkflowCard } from './AssistantWorkflowCard.js';
+import { useAssistantWorkflows } from './AssistantWorkflows.js';
 import { DiffView } from './DiffView.js';
+import { ExecutionModeMenu } from './ExecutionModeMenu.js';
 import {
   primaryElementFields,
   singletonKinds,
@@ -510,7 +513,22 @@ export function ElementPanel({
       return '';
     }
   });
-  const worldWorkflows = useAssistantWorkflows(projectId, workflowSessionId);
+  const informationWorkflows = useAssistantWorkflows(projectId, workflowSessionId);
+  const [workflowScope, setWorkflowScope] = useState<'all' | 'current'>('all');
+  const workflowChoiceMade = useRef(false);
+  const basicWorkflow =
+    !planning && informationWorkflows.template?.config.taskType === 'basic_information';
+  useEffect(() => {
+    if (planning || workflowChoiceMade.current) return;
+    const version = informationWorkflows.templates
+      .flatMap((template) => template.versions.slice(0, 1))
+      .find((version) => version.config.taskType === 'basic_information');
+    if (version) {
+      workflowChoiceMade.current = true;
+      informationWorkflows.setVersionId(version.id);
+    }
+  }, [planning, informationWorkflows.templates, informationWorkflows.setVersionId]);
+
   const [idea, setIdea] = useState('');
   const [preferences, setPreferences] = useState('');
   const [mode, setMode] = useState<ElementGenerationInput['mode']>('fill');
@@ -680,7 +698,11 @@ export function ElementPanel({
     setCreating(false);
     if (nextKind && nextKind !== kind) {
       setKind(nextKind);
-      if (nextKind !== 'worldbuilding') worldWorkflows.setVersionId('');
+      if (
+        nextKind !== 'worldbuilding' &&
+        informationWorkflows.template?.config.taskType === 'worldbuilding'
+      )
+        informationWorkflows.setVersionId('');
       setJobId('');
       setChecked([]);
     }
@@ -692,6 +714,11 @@ export function ElementPanel({
       return;
     }
     setKind(nextKind);
+    if (
+      nextKind !== 'worldbuilding' &&
+      informationWorkflows.template?.config.taskType === 'worldbuilding'
+    )
+      informationWorkflows.setVersionId('');
     const existing =
       nextKind !== 'overview'
         ? entries.find((entry) => entry.document.kind === nextKind && entry.status !== 'archived')
@@ -705,11 +732,93 @@ export function ElementPanel({
     setJobId('');
     setChecked([]);
   }
+  async function generateBasicInformation(
+    requestScope: 'kind' | 'target',
+    replacement: boolean,
+    requestedMode?: ElementGenerationInput['mode'],
+  ) {
+    if (dirty) throw new Error('请先保存当前修改，再运行基础信息编排');
+    if (informationWorkflows.active) throw new Error('请先处理或结束当前编排');
+    if (!providerId || !providers.some((provider) => provider.id === providerId)) {
+      onModels();
+      throw new Error('请先选择可用模型，已填写的灵感会保留');
+    }
+    const whole = workflowScope === 'all' && !replacement && requestedMode !== 'create';
+    const kinds = whole ? [...basicInformationKinds] : isBasicInformationKind(kind) ? [kind] : [];
+    if (!kinds.length) throw new Error('请先选择要完善的基础信息分类');
+    if (kinds.includes('character') && (!Number.isInteger(count) || count < 1 || count > 10))
+      throw new Error('人物目标数须为 1 到 10 的整数');
+    const generationMode = replacement ? 'replace' : (requestedMode ?? mode);
+    const currentEntries = entries.filter(
+      (item) => item.status !== 'archived' && kinds.some((kind) => item.document.kind === kind),
+    );
+    if (
+      generationMode === 'create' &&
+      currentEntries.some((item) => singletonKinds.includes(item.document.kind as ElementKind))
+    )
+      throw new Error('故事定位和文风已有设置，请选择补全或替代候选，或切换到可新增条目的分类');
+    const targets =
+      generationMode === 'create'
+        ? []
+        : !whole && requestScope === 'target' && entry
+          ? [entry]
+          : currentEntries;
+    if (targets.length > 30) throw new Error('当前条目较多，请切换到当前分类或当前条目分次完善');
+    if (
+      generationMode === 'extract' &&
+      !sourceIds.length &&
+      !entries.some((item) => item.status !== 'archived' && hasElementContent(item))
+    )
+      throw new Error('整理已有资料时，请先选择实际来源文档');
+    await beforeOperation();
+    let session = workflowSessionId;
+    if (!session) {
+      session = (await writingApi.session(projectId, '基础信息编排', null)).id;
+      setWorkflowSessionId(session);
+      try {
+        sessionStorage.setItem(`lingma:element-workflow:${projectId}`, session);
+      } catch {
+        /* Optional navigation state. */
+      }
+    }
+    await informationWorkflows.start(
+      workflowInputSchema.parse({
+        projectId,
+        sessionId: session,
+        taskType: 'basic_information',
+        mode: generationMode,
+        elementKinds: kinds,
+        elementTargets: targets.map((item) => ({
+          documentId: item.document.id,
+          baseVersionId: item.version.id,
+        })),
+        templateVersionId: informationWorkflows.versionId,
+        providerConfigId: providerId,
+        input: [
+          idea.trim() ||
+            '统筹完善基础信息，保留已有设定，补齐缺项，使主题、世界、人物、冲突和文风相互一致。',
+          `本次范围：${kinds.map((kind) => elementLabels[kind]).join('、')}。`,
+          kinds.includes('character')
+            ? `人物目标数：${count}，结合已有角色安排，每个人物单独成条目。`
+            : '',
+          preferences,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        selectedVersionIds: sourceIds,
+        allowFutureOutline: true,
+      }),
+    );
+  }
   async function generate(
     scope: 'kind' | 'target',
     replacement = false,
     requestedMode?: ElementGenerationInput['mode'],
   ) {
+    if (basicWorkflow) {
+      await generateBasicInformation(scope, replacement, requestedMode);
+      return;
+    }
     const generationKind = scope === 'target' ? entry?.document.kind : kind;
     if (!generationKind || !isElementKind(generationKind))
       throw new Error('请先选择要生成的要素分类或条目');
@@ -749,8 +858,11 @@ export function ElementPanel({
       !entries.some((e) => e.status !== 'archived' && hasElementContent(e))
     )
       throw new Error('整理已有资料时，请先选择实际来源文档');
-    if (worldWorkflows.versionId && generationKind === 'worldbuilding') {
-      if (worldWorkflows.active) throw new Error('请先处理或结束当前编排');
+    if (
+      informationWorkflows.template?.config.taskType === 'worldbuilding' &&
+      generationKind === 'worldbuilding'
+    ) {
+      if (informationWorkflows.active) throw new Error('请先处理或结束当前编排');
       let session = workflowSessionId;
       if (!session) {
         session = (await writingApi.session(projectId, '世界观编排', null)).id;
@@ -764,7 +876,7 @@ export function ElementPanel({
       const target = input.targetDocumentId
         ? entries.find((item) => item.document.id === input.targetDocumentId)
         : null;
-      await worldWorkflows.start(
+      await informationWorkflows.start(
         workflowInputSchema.parse({
           projectId,
           sessionId: session,
@@ -772,7 +884,7 @@ export function ElementPanel({
           targetDocumentId: target?.document.id ?? null,
           baseVersionId: target?.version.id ?? null,
           mode: target ? input.mode : input.mode === 'extract' ? 'extract' : 'create',
-          templateVersionId: worldWorkflows.versionId,
+          templateVersionId: informationWorkflows.versionId,
           providerConfigId: providerId,
           input: [idea.trim() || '完善世界观，保持既有设定一致。', preferences]
             .filter(Boolean)
@@ -1562,45 +1674,57 @@ export function ElementPanel({
               </button>
             </div>
             <p className="element-generation-target">
-              生成目标：{kind === 'overview' ? '请先选择左侧分类' : elementLabels[kind]}
+              生成目标：
+              {basicWorkflow && workflowScope === 'all'
+                ? '整套基础信息'
+                : kind === 'overview'
+                  ? '请先选择左侧分类'
+                  : elementLabels[kind]}
             </p>
-            {kind === 'worldbuilding' && (
+            {!planning && (
               <>
-                <label>
-                  执行方式
-                  <select
-                    aria-label="世界观执行方式"
-                    value={worldWorkflows.versionId}
-                    onChange={(event) => worldWorkflows.setVersionId(event.target.value)}
-                  >
-                    <option value="">直接生成</option>
-                    {worldWorkflows.templates
-                      .flatMap((item) => item.versions.slice(0, 1))
-                      .filter((version) => version.config.taskType === 'worldbuilding')
-                      .map((version) => (
-                        <option key={version.id} value={version.id}>
-                          {version.config.name} · v{version.versionNo}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                {worldWorkflows.error && <p role="alert">{worldWorkflows.error}</p>}
-                {worldWorkflows.runs.map((workflow) => (
-                  <AssistantWorkflowCard
-                    key={workflow.id}
-                    run={workflow}
-                    onChange={worldWorkflows.update}
-                    beforeAccept={async () => {
-                      if (dirty) throw new Error('请先保存当前改稿再采用');
-                      await beforeOperation();
-                    }}
-                    onSaved={async (ids) => {
-                      await reload();
-                      await onChanged();
-                      if (ids[0]) choose(ids[0]);
+                <div className="element-workflow-selector chat-options">
+                  <span>执行方式</span>
+                  <ExecutionModeMenu
+                    templates={informationWorkflows.templates.filter(
+                      (template) => template.versions[0]?.config.taskType === 'basic_information',
+                    )}
+                    value={informationWorkflows.versionId}
+                    onChange={(value) => {
+                      workflowChoiceMade.current = true;
+                      informationWorkflows.setVersionId(value);
                     }}
                   />
-                ))}
+                </div>
+                {basicWorkflow && (
+                  <div
+                    className="element-workflow-scope"
+                    role="group"
+                    aria-label="基础信息编排范围"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={workflowScope === 'all'}
+                      onClick={() => setWorkflowScope('all')}
+                    >
+                      整套基础信息
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={workflowScope === 'current'}
+                      disabled={kind === 'overview'}
+                      onClick={() => setWorkflowScope('current')}
+                    >
+                      当前分类 / 条目
+                    </button>
+                    <p className="muted fine">
+                      {workflowScope === 'all'
+                        ? '统一完善主题、世界、人物、核心冲突和文风，审校后按分类采用。'
+                        : '复用同一套编排，只完善当前分类或条目。'}
+                    </p>
+                  </div>
+                )}
+                {informationWorkflows.error && <p role="alert">{informationWorkflows.error}</p>}
               </>
             )}
             <div className="element-generator">
@@ -1610,7 +1734,11 @@ export function ElementPanel({
                   rows={3}
                   value={idea}
                   onChange={(change) => setIdea(change.target.value)}
-                  placeholder="例如：丰富这所学校的日常场景，保留现有时代与人物设定。"
+                  placeholder={
+                    basicWorkflow
+                      ? '例如：以高中社团日常为背景，完善主题、场景、人物关系、核心冲突与轻松的叙事风格。'
+                      : '例如：丰富这所学校的日常场景，保留现有时代与人物设定。'
+                  }
                 />
               </label>
               <p className="muted fine">参考作品已有设定与所选资料生成，审阅后再采用。</p>
@@ -1621,34 +1749,41 @@ export function ElementPanel({
                   disabled={
                     busy ||
                     dirty ||
-                    kind === 'overview' ||
+                    (kind === 'overview' && !(basicWorkflow && workflowScope === 'all')) ||
+                    Boolean(informationWorkflows.active) ||
                     jobs.some((item) => ['queued', 'running'].includes(item.status))
                   }
                   onClick={() => act(() => generate(entry ? 'target' : 'kind'))}
                 >
-                  {kind === 'overview'
-                    ? '先选择要完善的分类'
-                    : entry
-                      ? mode === 'replace'
-                        ? '生成替代候选'
-                        : mode === 'extract'
-                          ? '整理当前条目'
-                          : '完善当前条目'
-                      : `生成${elementLabels[kind]}`}
+                  {basicWorkflow
+                    ? workflowScope === 'all'
+                      ? '运行基础信息编排'
+                      : `编排完善${kind === 'overview' ? '基础信息' : elementLabels[kind]}`
+                    : kind === 'overview'
+                      ? '先选择要完善的分类'
+                      : entry
+                        ? mode === 'replace'
+                          ? '生成替代候选'
+                          : mode === 'extract'
+                            ? '整理当前条目'
+                            : '完善当前条目'
+                        : `生成${elementLabels[kind]}`}
                 </button>
-                {entry && !singletonKinds.includes(effectiveKind) && (
-                  <button
-                    type="button"
-                    disabled={
-                      busy ||
-                      dirty ||
-                      jobs.some((item) => ['queued', 'running'].includes(item.status))
-                    }
-                    onClick={() => act(() => generate('kind', false, 'create'))}
-                  >
-                    新增设定
-                  </button>
-                )}
+                {entry &&
+                  !singletonKinds.includes(effectiveKind) &&
+                  !(basicWorkflow && workflowScope === 'all') && (
+                    <button
+                      type="button"
+                      disabled={
+                        busy ||
+                        dirty ||
+                        jobs.some((item) => ['queued', 'running'].includes(item.status))
+                      }
+                      onClick={() => act(() => generate('kind', false, 'create'))}
+                    >
+                      新增设定
+                    </button>
+                  )}
               </div>
               <details className="element-ai-settings">
                 <summary>生成设置与参考资料</summary>
@@ -1683,7 +1818,7 @@ export function ElementPanel({
                     <option value="extract">整理已有资料（必须有依据）</option>
                   </select>
                 </label>
-                {entry && (
+                {entry && !(basicWorkflow && workflowScope === 'all') && (
                   <button
                     type="button"
                     disabled={busy || dirty || jobRunning}
@@ -1700,7 +1835,7 @@ export function ElementPanel({
                     onChange={(change) => setPreferences(change.target.value)}
                   />
                 </label>
-                {kind === 'character' && (
+                {(kind === 'character' || (basicWorkflow && workflowScope === 'all')) && (
                   <label>
                     人物目标数
                     <input
@@ -1712,16 +1847,18 @@ export function ElementPanel({
                     />
                   </label>
                 )}
-                <label>
-                  最多模型调用
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={maxCalls}
-                    onChange={(change) => setMaxCalls(Number(change.target.value))}
-                  />
-                </label>
+                {!informationWorkflows.versionId && (
+                  <label>
+                    最多模型调用
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={maxCalls}
+                      onChange={(change) => setMaxCalls(Number(change.target.value))}
+                    />
+                  </label>
+                )}
                 <p className="muted fine">
                   已有设定与规划资料自动作为参考；可额外选择正文和事件大纲。
                 </p>
@@ -1746,6 +1883,33 @@ export function ElementPanel({
                   ))}
               </details>
             </div>
+            {!planning && informationWorkflows.runs.length > 0 && (
+              <details
+                className="element-workflow-history"
+                open={Boolean(informationWorkflows.active)}
+              >
+                <summary>基础信息编排与待审候选（{informationWorkflows.runs.length}）</summary>
+                {informationWorkflows.runs.map((workflow) => (
+                  <AssistantWorkflowCard
+                    key={workflow.id}
+                    run={workflow}
+                    onChange={informationWorkflows.update}
+                    beforeAccept={async () => {
+                      if (dirty) throw new Error('请先保存当前改稿再采用');
+                      await beforeOperation();
+                    }}
+                    onSaved={async (ids: string[]) => {
+                      await reload();
+                      await onChanged();
+                      if (ids[0]) {
+                        const saved = await elementApi.entry(ids[0]);
+                        choose(saved.document.id, saved.document.kind as ElementKind);
+                      }
+                    }}
+                  />
+                ))}
+              </details>
+            )}
             <details className="element-jobs" open={jobRunning || pendingCandidates.length > 0}>
               <summary>生成任务与待审候选</summary>
               <label>
