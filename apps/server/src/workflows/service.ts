@@ -1320,7 +1320,35 @@ export class WorkflowService {
         ),
       ],
     };
-    const snapshot = await this.preview(input);
+    const fresh = await this.preview(input);
+    // Refreshing sources must not silently upgrade the model, parameters, tools or global prompt:
+    // those stay as frozen when the run started, only the authorized material changes.
+    const snapshot = workflowPreviewSchema.parse({
+      ...fresh,
+      contexts: Object.fromEntries(
+        Object.entries(fresh.contexts).map(([profileId, context]) => {
+          const frozen = w.snapshot.contexts[profileId];
+          if (!frozen) return [profileId, context];
+          return [
+            profileId,
+            {
+              ...context,
+              agentPromptRevision: frozen.agentPromptRevision,
+              request: {
+                ...context.request,
+                systemPrompt: frozen.request.systemPrompt,
+                modelId: frozen.request.modelId,
+                connectionSnapshot: frozen.request.connectionSnapshot,
+                parameters: frozen.request.parameters,
+                toolDefinitions: frozen.request.toolDefinitions,
+              },
+            },
+          ];
+        }),
+      ),
+      profiles: w.snapshot.profiles,
+      hash: fresh.hash,
+    });
     const result = this.store.once(`workflow:refresh:${id}`, key, request, () => {
       const latest = this.get(id);
       this.library.assertRevision(latest.revision, revision);

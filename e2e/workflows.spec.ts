@@ -68,6 +68,15 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   await dialog
     .getByLabel('角色提示词', { exact: true })
     .fill('检查伏笔与人物知识边界，提交具体问题和引用。');
+  // A prompt that still demands JSON output is flagged and can be cleaned in one click.
+  await dialog
+    .getByLabel('角色提示词', { exact: true })
+    .fill('检查伏笔。请用 JSON 提交结果。保持简洁。');
+  await expect(dialog.getByText('仍有 JSON / 提交工具的输出要求')).toBeVisible();
+  await dialog.getByRole('button', { name: '移除旧格式要求', exact: true }).click();
+  await expect(dialog.getByLabel('角色提示词', { exact: true })).toHaveValue(
+    '检查伏笔。保持简洁。',
+  );
   await dialog.getByRole('button', { name: '保存并发布 Agent', exact: true }).click();
   await expect(dialog.getByRole('status').filter({ hasText: '已发布角色版本' })).toBeVisible();
   await dialog.getByRole('link', { name: '工作流模板', exact: true }).click();

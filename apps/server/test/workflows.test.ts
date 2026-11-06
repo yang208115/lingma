@@ -692,3 +692,89 @@ it('reruns missing basic-information categories only when the author asks', asyn
   expect(second.missingKinds).toEqual([]);
   expect(second.result?.type === 'element_candidates' && second.result.items.length).toBe(2);
 });
+
+it('pauses at a node boundary when a pause races a node completion, then resumes without repeating work', async () => {
+  let release: () => void = () => {};
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const f = await fixture({
+    factory: (request) => ({
+      id: 'fake/v1',
+      async *stream() {
+        const t = taskOf(request);
+        if (first) {
+          first = false;
+          await hold;
+        }
+        yield text(t.workflowNode.stage === 'review' ? '无重要问题' : `${t.workflowNode.key} 产物`);
+      },
+    }),
+  });
+  const w = await f.writing.workflows.create(f.input, randomUUID());
+  await vi.waitFor(() => expect(f.writing.workflows.get(w.id).modelCalls).toBe(1));
+  decide(f, f.writing.workflows.get(w.id), 'pause');
+  release();
+  const paused = await state(f, w.id, 'paused');
+  const calls = paused.modelCalls;
+  expect(calls).toBe(1);
+  expect(paused.nodes.filter((n) => n.status === 'pending').length).toBeGreaterThan(0);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(f.writing.workflows.get(w.id).modelCalls).toBe(calls);
+  decide(f, paused, 'resume');
+  const done = await state(f, w.id, 'awaiting_acceptance');
+  expect(done.modelCalls).toBe(4);
+  expect(done.nodes.filter((n) => n.stage !== 'merge').every((n) => n.runIds.length === 1)).toBe(
+    true,
+  );
+});
+
+it('cancelling at a manual gate releases the project and never starts the remaining nodes', async () => {
+  const f = await fixture();
+  const w = await f.writing.workflows.create({ ...f.input, manualGates: true }, randomUUID());
+  const gate = await state(f, w.id, 'awaiting_input');
+  // A gate already holds the run still, so pausing is refused rather than silently ignored.
+  expect(() => decide(f, gate, 'pause')).toThrow('只有运行中');
+  decide(f, gate, 'cancel');
+  const cancelled = f.writing.workflows.get(w.id);
+  expect(cancelled.status).toBe('cancelled');
+  expect(cancelled.nodes.filter((n) => n.runIds.length)).toHaveLength(1);
+  await f.writing.workflows.create(f.input, randomUUID());
+});
+
+it('refreshing sources updates material but keeps the frozen model, parameters and global prompt', async () => {
+  const f = await fixture();
+  const w = await f.writing.workflows.create(f.input, randomUUID());
+  const ready = await state(f, w.id, 'awaiting_acceptance');
+  const profileId = Object.keys(ready.snapshot.contexts)[0] as string;
+  const frozen = ready.snapshot.contexts[profileId]?.request;
+  // Author edits the global prompt and the model parameters after the run started.
+  const prompt = f.writing.prompt.get();
+  f.writing.prompt.save({ prompt: `${prompt.prompt}\n新增的全局规则`, revision: prompt.revision });
+  const provider = f.writing.providers.get(f.provider.id);
+  f.writing.providers.save(
+    { ...provider.config, parameters: { temperature: 0.9 } },
+    provider.id,
+    provider.revision,
+  );
+  // New formal text forces the author-merge path; supply the merged full text.
+  f.novels.saveDocument(f.chapter.document.id, {
+    baseVersionId: f.chapter.version.id,
+    content: '作者手写的新正文。',
+    metadata: {},
+  });
+  const refreshed = await f.writing.workflows.refreshSources(
+    w.id,
+    ready.revision,
+    '合并后的完整稿',
+    randomUUID(),
+  );
+  const next = refreshed.snapshot.contexts[profileId]?.request;
+  expect(next?.systemPrompt).toBe(frozen?.systemPrompt);
+  expect(next?.systemPrompt).not.toContain('新增的全局规则');
+  expect(next?.parameters).toEqual(frozen?.parameters);
+  expect(refreshed.sourceHistory).toHaveLength(1);
+  const again = await state(f, w.id, 'awaiting_acceptance');
+  expect(again.round).toBeGreaterThan(ready.round);
+});

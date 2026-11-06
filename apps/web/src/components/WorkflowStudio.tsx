@@ -44,6 +44,15 @@ const statuses: Record<string, string> = {
   skipped: '已跳过',
   invalidated: '已失效',
 };
+// Older prompts told the model to answer with JSON or call a submit tool; nodes now reply in Markdown.
+const legacyFormat =
+  /JSON|submit_workflow_artifact|repair_workflow_artifact|结构化产物|提交产物|review_report|chapter_draft|chapter_plan/i;
+const stripLegacyFormat = (prompt: string) =>
+  prompt
+    .split(/(?<=[。！？\n])/)
+    .filter((sentence) => !legacyFormat.test(sentence))
+    .join('')
+    .trim();
 const freshProfile = () =>
   agentProfileConfigSchema.parse({
     name: '新 Agent',
@@ -289,6 +298,23 @@ export function WorkflowStudio({
                   onChange={(e) => setConfig({ ...config, prompt: e.target.value })}
                 />
               </label>
+              {legacyFormat.test(config.prompt) && (
+                <p role="status" className="warning">
+                  提示词里仍有 JSON / 提交工具的输出要求。节点现在直接用 Markdown
+                  回复，输出格式由系统追加。
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setConfig({
+                        ...config,
+                        prompt: stripLegacyFormat(config.prompt) || config.prompt,
+                      })
+                    }
+                  >
+                    移除旧格式要求
+                  </button>
+                </p>
+              )}
               <label>
                 角色模型
                 <select
