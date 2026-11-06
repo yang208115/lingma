@@ -115,6 +115,12 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   // Every node's returned content is readable without leaving the card.
   await card.getByText('查看返回内容', { exact: false }).first().click();
   await expect(card.locator('.workflow-plan-box').first()).toBeVisible();
+  // A node's output opens as an editor tab with the full text.
+  await card.getByRole('button', { name: '在标签页中预览' }).first().click();
+  const previewTab = page.getByRole('tab', { name: /预览$/ });
+  await expect(previewTab).toBeVisible();
+  await expect(page.getByRole('region', { name: /预览$/ })).toContainText('本章目标');
+  await page.getByRole('tab', { name: '雨夜来客' }).first().click();
   await card.getByText('用量', { exact: true }).click();
   await expect(card).toContainText('模型调用');
   const screen = testInfo.outputPath('collaborative-workflow.png');

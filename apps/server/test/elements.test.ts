@@ -468,23 +468,32 @@ it('upgrades schema nine while preserving IDs, immutable versions and confirmed 
   const root = await mkdtemp(resolve(tmpdir(), 'lingma-elements-upgrade-'));
   const config = loadConfig({ DATA_DIR: 'data' }, root);
   const old = await openRuntime(config, { migrations: loadMigrations().slice(0, 9) });
-  const novels = new NovelService(old.db),
-    project = novels.createProject('旧书');
-  const chapter = novels.createDocument(
-    project.id,
-    createDocumentSchema.parse({
-      baseStructureVersion: 1,
-      kind: 'chapter',
-      title: '旧章',
-      content: '旧内容',
-    }),
-  );
+  const projectId = randomUUID(),
+    chapterId = randomUUID(),
+    chapterVersionId = randomUUID(),
+    stamp = new Date().toISOString();
+  old.db.transaction((db) => {
+    db.prepare('INSERT INTO projects(id,title,created_at,updated_at) VALUES(?,?,?,?)').run(
+      projectId,
+      '旧书',
+      stamp,
+      stamp,
+    );
+    db.prepare(
+      "INSERT INTO documents(id,project_id,kind,title,current_version_id) VALUES(?,?,'chapter','旧章',?)",
+    ).run(chapterId, projectId, chapterVersionId);
+    db.prepare(
+      "INSERT INTO document_versions(id,document_id,version_no,content,metadata_json,content_hash,source,created_at) VALUES(?,?,1,'旧内容','{}',?,'manual',?)",
+    ).run(chapterVersionId, chapterId, 'b'.repeat(64), stamp);
+  });
+  const project = { id: projectId };
+  const chapter = { document: { id: chapterId }, version: { id: chapterVersionId } };
   const docId = randomUUID(),
     versionId = randomUUID();
   old.db.transaction((db) => {
     db.prepare(
       "INSERT INTO documents(id,project_id,kind,title,current_version_id) VALUES(?,?,'character','旧人物',?)",
-    ).run(docId, project.id, versionId);
+    ).run(docId, projectId, versionId);
     db.prepare(
       "INSERT INTO document_versions(id,document_id,version_no,content,metadata_json,content_hash,source,created_at) VALUES(?,?,1,'旧设定','{\"custom\":42}',?,'manual',?)",
     ).run(versionId, docId, 'a'.repeat(64), new Date().toISOString());

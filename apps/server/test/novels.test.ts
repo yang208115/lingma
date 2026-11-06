@@ -246,7 +246,7 @@ describe('novel structure and immutable versions', () => {
     );
   });
 
-  it('sorts volumes/chapters in export, excludes materials and soft-deletes chapter outlines while retaining history', async () => {
+  it('sorts volumes/chapters in export, excludes materials and unlinks story events when a chapter is deleted', async () => {
     const { novels, project, create } = await fixture();
     const first = create('chapter', '第一章', { content: '一号正文\r\n下一行' });
     const second = create('chapter', '第二章', { content: '二号正文' });
@@ -283,9 +283,12 @@ describe('novel structure and immutable versions', () => {
     expect(chapterText).toContain('一号正文');
     expect(chapterText).not.toContain('二号正文');
     novels.deleteDocument(first.document.id, first.version.id, structure.project.structureVersion);
-    expect(novels.getStructure(project.id).documents.map((item) => item.id)).not.toContain(
-      outline.document.id,
-    );
+    // Story events are independent documents: deleting a chapter only unlinks them.
+    const remaining = novels
+      .getStructure(project.id)
+      .documents.find((item) => item.id === outline.document.id);
+    expect(remaining?.chapterId).toBeNull();
+    expect(remaining?.chapterIds).toEqual([]);
     expect(novels.getVersion(outline.document.id, outline.version.id).content).toBe('不可导出资料');
     expect(() => novels.getDocument(first.document.id)).toThrow('已删除');
     const afterDelete = novels.getStructure(project.id);
@@ -331,23 +334,26 @@ describe('novel structure and immutable versions', () => {
     roots.push(root);
     const config = loadConfig({ DATA_DIR: 'data' }, root);
     const old = await openRuntime(config, { migrations: loadMigrations().slice(0, 1) });
-    const novels = new NovelService(old.db);
     const projectId = randomUUID();
-    old.db.transaction((db) =>
-      db
-        .prepare('INSERT INTO projects(id,title,created_at,updated_at) VALUES(?,?,?,?)')
-        .run(projectId, '原作品', new Date().toISOString(), new Date().toISOString()),
-    );
-    const project = novels.getProject(projectId);
-    const chapter = novels.createDocument(
-      project.id,
-      createDocumentSchema.parse({
-        baseStructureVersion: 1,
-        kind: 'chapter',
-        title: '旧章节',
-        content: '原始内容',
-      }),
-    );
+    const chapterId = randomUUID();
+    const versionId = randomUUID();
+    const stamp = new Date().toISOString();
+    // Seed through raw SQL: the service targets the current schema, not migration 1.
+    old.db.transaction((db) => {
+      db.prepare('INSERT INTO projects(id,title,created_at,updated_at) VALUES(?,?,?,?)').run(
+        projectId,
+        '原作品',
+        stamp,
+        stamp,
+      );
+      db.prepare(
+        "INSERT INTO documents(id,project_id,kind,title,current_version_id) VALUES(?,?,'chapter','旧章节',?)",
+      ).run(chapterId, projectId, versionId);
+      db.prepare(
+        "INSERT INTO document_versions(id,document_id,version_no,content,metadata_json,content_hash,source,created_at) VALUES(?,?,1,'原始内容','{}',?,'manual',?)",
+      ).run(versionId, chapterId, 'c'.repeat(64), stamp);
+    });
+    const chapter = { document: { id: chapterId } };
     await old.close();
     const upgraded = await openRuntime(config);
     runtimes.push(upgraded);

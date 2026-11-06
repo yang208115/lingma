@@ -121,15 +121,17 @@ export async function startModelFixture(port = 4179) {
               ? '保持限知视角，保留来客的秘密。'
               : node.stage === 'review'
                 ? '无重要问题'
-                : task.taskType === 'master_outline'
-                  ? '# 雾港故事总纲\n\n## 起点\n林舟在雾港遇到失忆的来客。\n## 转折\n来客发现魔法的代价。\n## 高潮与结局\n林舟付出记忆换回真相。'
-                  : task.taskType === 'story_events'
-                    ? '## 雨夜抵港\n时间：第一天\n概述：来客出现\n来客雨夜抵港，向林舟求助。\n\n## 记忆的代价\n时间：第二天\n概述：揭示规则\n林舟发现施法需要付出记忆。'
-                    : task.taskType === 'worldbuilding'
-                      ? '## [世界] 雾港世界观\n> 海雾中的港城以记忆交换魔法。\n规则与使用条件：施法必须交出一段记忆\n代价与限制：失去珍贵回忆\n禁忌：不能复活死者'
-                      : task.targetDocumentId
-                        ? draftText
-                        : `# 雨夜来客\n\n${draftText}`;
+                : task.taskType === 'basic_information'
+                  ? '## [世界] 十分钟法则\n> 每次回溯最多十分钟。\n规则与使用条件：设定：每次选择都必须付出代价\n\n## [人物] 邮差林舟\n> 失去记忆的邮差。\n外在目标：寻找失去的明天'
+                  : task.taskType === 'master_outline'
+                    ? '# 雾港故事总纲\n\n## 起点\n林舟在雾港遇到失忆的来客。\n## 转折\n来客发现魔法的代价。\n## 高潮与结局\n林舟付出记忆换回真相。'
+                    : task.taskType === 'story_events'
+                      ? '## 雨夜抵港\n时间：第一天\n概述：来客出现\n来客雨夜抵港，向林舟求助。\n\n## 记忆的代价\n时间：第二天\n概述：揭示规则\n林舟发现施法需要付出记忆。'
+                      : task.taskType === 'worldbuilding'
+                        ? '## [世界] 雾港世界观\n> 海雾中的港城以记忆交换魔法。\n规则与使用条件：施法必须交出一段记忆\n代价与限制：失去珍贵回忆\n禁忌：不能复活死者'
+                        : task.targetDocumentId
+                          ? draftText
+                          : `# 雨夜来客\n\n${draftText}`;
         emit({ role: 'assistant', content: text });
         emit({}, 'stop');
       } else {

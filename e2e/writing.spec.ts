@@ -120,7 +120,7 @@ test('the outline assistant generates, previews and saves a total outline while 
   await page.goto(`/?project=${f.project.id}&document=${event.document.id}&view=outline`);
   await page.getByLabel('写作模型', { exact: true }).selectOption(f.provider.id);
   await page.getByRole('button', { name: 'AI 生成总纲', exact: true }).click();
-  await expect(page.getByLabel('写作任务', { exact: true })).toHaveValue(/生成一份完整的故事总纲/);
+  await expect(page.locator('.chat-task textarea')).toHaveValue(/生成一份完整的故事总纲/);
   await page.getByRole('button', { name: '发送', exact: true }).click();
   const card = page.locator('.outline-creation-card');
   await expect(card).toContainText('故事总纲候选');
@@ -169,11 +169,11 @@ test('thinking streams before completion, survives reload and stays out of the n
   await page.reload();
   await page.locator('.trace-row.kind-thinking > summary').first().click();
   await expect(firstThought).toContainText('第1轮：先核对人物资料，再生成正文。');
-  await expect(page.getByRole('status').filter({ hasText: '运行状态：已完成' })).toBeVisible();
+  await expect(page.getByText('运行状态：已完成', { exact: true })).toBeVisible();
   await expect(page.locator('.trace-row.kind-thinking').nth(2)).toContainText(
     '第3轮：先核对人物资料，再生成正文。',
   );
-  await expect(page.getByLabel('模型候选', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
   await page.getByRole('button', { name: '采纳修改', exact: true }).click();
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue('林舟用左手拨开窗栓。');
   const screenshot = testInfo.outputPath('thinking-output.png');
@@ -192,7 +192,7 @@ test('a model with no thinking has an explicit empty state', async ({ page, requ
   await start(page);
   await expect(page.getByText('运行状态：已完成', { exact: true })).toBeVisible();
   await expect(page.locator('.trace-row.kind-thinking')).toHaveCount(0);
-  await expect(page.getByLabel('模型候选', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
 });
 
 test('the agent loads a Skill from its prompt catalog through the real SDK tool loop', async ({
@@ -222,7 +222,7 @@ test('the agent loads a Skill from its prompt catalog through the real SDK tool 
   });
   expect(run.turns).toHaveLength(4);
   expect(JSON.stringify(run.turns[1].request.messages)).toContain('读取允许资料后生成候选。');
-  await expect(page.getByLabel('模型候选', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
 });
 
 test('authors edit and restore the Agent prompt, and new runs receive the saved text', async ({
@@ -284,7 +284,7 @@ test('real pi-ai HTTP path reads frozen material, stages a proposal, and authors
   await open(page, f);
   await start(page);
   await expect(page.getByText('运行状态：已完成', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('模型候选', { exact: true })).toContainText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toContainText('林舟用左手拨开窗栓。');
   await page.getByRole('button', { name: '返回编辑', exact: true }).click();
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue('林舟用左手开窗。');
   await page.getByRole('button', { name: '在正文区查看差异', exact: true }).click();
@@ -359,7 +359,7 @@ test('old proposal conflicts preserve the newer document and candidate text', as
   await expect(page.getByRole('button', { name: '采纳修改', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: '返回编辑', exact: true }).click();
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue('作者修改后的正文');
-  await expect(page.getByLabel('模型候选', { exact: true })).toContainText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toContainText('林舟用左手拨开窗栓。');
 });
 
 test('EventSource reconnect sends Last-Event-ID even though its original after remains unchanged', async ({
@@ -388,7 +388,7 @@ test('EventSource reconnect sends Last-Event-ID even though its original after r
   expect(Number(connections[1]?.lastEventId)).toBeGreaterThan(Number(connections[0]?.after));
   expect(connections[1]?.after).toBe(connections[0]?.after);
   await expect(page.getByText('运行状态：已完成', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('模型候选', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toHaveText('林舟用左手拨开窗栓。');
 });
 
 test('model settings persist non-sensitive configuration and record an explicit SDK connection check', async ({
@@ -494,7 +494,7 @@ test('writing continues in the background after switching pages and returns to t
   await expect(page).toHaveURL('/skills');
   await navigation.getByRole('link', { name: '写作', exact: true }).click();
   await expect(page.getByText('运行状态：已完成', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('模型候选', { exact: true })).toContainText('林舟用左手拨开窗栓。');
+  await expect(page.getByLabel('助手回复', { exact: true })).toContainText('林舟用左手拨开窗栓。');
   const runs = (await (await request.get(`/api/v1/runs?projectId=${f.project.id}`)).json()).data;
   expect(runs).toHaveLength(1);
   expect(runs[0].id).toBe(runId);
@@ -513,7 +513,7 @@ test('returning from model settings refreshes options and retains the selected m
   const navigation = page.getByRole('navigation', { name: '页面导航' });
   await navigation.getByRole('link', { name: '模型设置', exact: true }).click();
   const settings = page.getByRole('main', { name: '模型设置', exact: true });
-  await settings.getByLabel('已有配置', { exact: true }).selectOption(f.provider.id);
+  await settings.getByRole('combobox', { name: /已有配置/ }).selectOption(f.provider.id);
   const label = `更新的模型 ${crypto.randomUUID()}`;
   await settings.getByLabel('配置名称', { exact: true }).fill(label);
   await settings.getByRole('button', { name: '保存模型配置', exact: true }).click();

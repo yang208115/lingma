@@ -49,7 +49,7 @@ test('export waits for pending text before starting the TXT download', async ({
   await open(page, book.id, doc.document.id);
   await page.getByLabel('文档正文', { exact: true }).fill('尚未触发自动保存的新稿');
   const downloadEvent = page.waitForEvent('download');
-  await page.getByRole('button', { name: '↓ 导出整部作品 TXT' }).click();
+  await openMenu(page, '导出整部作品 TXT');
   const download = await downloadEvent;
   const path = await download.path();
   expect(path).toBeTruthy();
@@ -73,14 +73,14 @@ test('a pending draft in another chapter is recovered on reload and blocks expor
   await expect(page.getByRole('main', { name: '正文编辑区' }).getByRole('status')).toHaveText(
     '保存失败',
   );
-  await page.getByRole('button', { name: '已保存的第二章', exact: true }).click();
+  await pickChapter(page, '已保存的第二章');
   page.on('dialog', (dialog) => {
     void dialog.accept();
   });
   await page.reload();
-  await page.getByText('资料与待处理草稿', { exact: true }).click();
+  await page.getByText('待处理草稿', { exact: true }).click();
   await expect(page.getByRole('button', { name: /待处理：待保存的第一章/ })).toBeVisible();
-  await page.getByRole('button', { name: '↓ 导出整部作品 TXT' }).click();
+  await openMenu(page, '导出整部作品 TXT');
   await expect(page.getByRole('alert')).toContainText('导出前请先处理');
   await page.getByRole('button', { name: /待处理：待保存的第一章/ }).click();
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue('第一章未保存稿');
@@ -91,6 +91,13 @@ test('a pending draft in another chapter is recovered on reload and blocks expor
   );
   expect(await content(request, second.document.id)).toBe('原始正文');
 });
+async function openMenu(page: Page, item: string) {
+  await page.getByLabel('文档操作', { exact: true }).click();
+  await page.getByRole('button', { name: item, exact: true }).click();
+}
+async function pickChapter(page: Page, title: string) {
+  await page.getByLabel('切换章节', { exact: true }).selectOption({ label: title });
+}
 async function save(page: Page, value: string) {
   await page.getByLabel('文档正文', { exact: true }).fill(value);
   await page.getByRole('button', { name: '立即保存', exact: true }).click();
@@ -123,11 +130,11 @@ test('serial autosave preserves typing during a request, chapter switching and r
   await page.getByRole('button', { name: '立即保存', exact: true }).click();
   await expect.poll(() => intercepted).toBe(true);
   await page.getByLabel('文档正文', { exact: true }).fill('保存中继续输入的完整新稿');
-  await page.getByRole('button', { name: '第二章', exact: true }).click();
+  await pickChapter(page, '第二章');
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue('原始正文');
   release();
   await expect.poll(() => content(request, first.document.id)).toBe('保存中继续输入的完整新稿');
-  await page.getByRole('button', { name: '第一章', exact: true }).click();
+  await pickChapter(page, '第一章');
   await expect(page.getByRole('main', { name: '正文编辑区' }).getByRole('status')).toHaveText(
     '已保存',
   );
@@ -234,26 +241,25 @@ test('UI creates materials, versions metadata, organizes a volume and exports on
     .getByRole('navigation', { name: '页面导航' })
     .getByRole('link', { name: '写作', exact: true })
     .click();
-  await page.getByRole('button', { name: '＋ 新建文档' }).click();
+  await page.getByRole('button', { name: '新建章节', exact: true }).click();
   await page.getByLabel('文档名称').fill('第一章 界面验收');
   await page.getByRole('button', { name: '创建文档', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '新建文档', exact: true })).not.toBeVisible();
   await expect(page.getByRole('heading', { name: '第一章 界面验收', exact: true })).toBeVisible();
   await save(page, '林舟用左手拨开窗栓。');
-  await page.getByRole('button', { name: '＋ 新建文档' }).click();
-  await page.getByLabel('文档类型').selectOption('character');
-  await page.getByLabel('文档名称').fill('人物 林舟');
-  await page.getByRole('button', { name: '创建文档', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '新建文档', exact: true })).not.toBeVisible();
-  await expect(page.getByRole('heading', { name: '人物 林舟', exact: true })).toBeVisible();
-  await save(page, '惯用左手，铜铃交给苏禾。');
-  await page.getByText('文档信息 · 人物别名与设定', { exact: true }).click();
-  await page.getByLabel('元数据 JSON').fill('{"aliases":["阿舟"],"dominantHand":"左手"}');
-  await page.getByRole('button', { name: '立即保存' }).click();
-  await expect(page.getByRole('main', { name: '正文编辑区' }).getByRole('status')).toHaveText(
-    '已保存',
-  );
-  await page.getByRole('button', { name: '卷章管理', exact: true }).click();
+  // Materials are authored on the basic-information page now; seed one to prove export excludes it.
+  const id = new URL(page.url()).pathname.split('/')[2] as string;
+  const structure = (await (await request.get(`/api/v1/projects/${id}/structure`)).json()).data;
+  await request.post(`/api/v1/projects/${id}/documents`, {
+    data: {
+      kind: 'character',
+      title: '人物 林舟',
+      content: '惯用左手，铜铃交给苏禾。',
+      baseStructureVersion: structure.project.structureVersion,
+    },
+  });
+  await page.reload();
+  await openMenu(page, '卷章管理');
   await page.getByRole('button', { name: '添加卷' }).click();
   await page.getByLabel('卷标题', { exact: true }).fill('第一卷 雾港');
   const volume = await page
@@ -264,9 +270,7 @@ test('UI creates materials, versions metadata, organizes a volume and exports on
   expect(volume).toBeTruthy();
   await page.getByLabel('第一章 界面验收 所属卷').selectOption(volume ?? '');
   await page.getByRole('button', { name: '保存修改' }).click();
-  await page.getByRole('button', { name: '第一章 界面验收', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '第一卷 雾港' })).toBeVisible();
-  const id = new URL(page.url()).pathname.split('/')[2];
+  await pickChapter(page, '第一章 界面验收');
   const text = await (await request.get(`/api/v1/projects/${id}/export.txt`)).text();
   expect(text).toContain('第一卷 雾港');
   expect(text).toContain('林舟用左手');

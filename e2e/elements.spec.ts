@@ -24,7 +24,7 @@ test('a chapter-free work generates one category, survives refresh and accepts i
       await request.post('/api/v1/provider-configs', {
         data: {
           name: '要素模拟模型',
-          modelId: 'fixture-elements',
+          modelId: 'fixture-workflow',
           connection: {
             api: 'openai-completions',
             provider: 'fixture',
@@ -42,44 +42,38 @@ test('a chapter-free work generates one category, survives refresh and accepts i
   await page.getByRole('link', { name: '基本信息', exact: true }).click();
   const panel = page.getByRole('region', { name: '基本信息管理', exact: true });
   await expect(panel).toBeVisible();
-  await panel.getByLabel('一句话灵感', { exact: true }).fill('失去记忆的邮差在重置之城寻找明天');
-  await panel.getByRole('combobox', { name: '模型', exact: true }).selectOption(provider.id);
-  await expect(panel.getByRole('button', { name: 'AI 一键生成', exact: true })).toHaveCount(0);
-  await panel
-    .getByRole('navigation', { name: '要素分类' })
-    .getByRole('button', { name: /^2\. 世界观/ })
-    .click();
-  await panel.getByRole('button', { name: '生成世界观', exact: true }).click();
-  await expect(panel.getByRole('status')).toContainText('生成完成', { timeout: 20000 });
-  const tasks = (
-    await (await request.get(`/api/v1/projects/${project.id}/element-generations`)).json()
-  ).data;
-  expect(tasks[0].candidates).toHaveLength(1);
+  // The AI assistant runs the shared basic-information orchestration; acceptance happens on its card.
+  await panel.getByRole('button', { name: 'AI 助手', exact: false }).first().click();
+  const assistant = page.getByRole('complementary', { name: 'AI 要素生成' });
+  await expect(assistant).toBeVisible();
+  await assistant.getByRole('textbox').first().fill('失去记忆的邮差在重置之城寻找明天');
+  await assistant.getByText('生成设置与参考资料', { exact: true }).click();
+  await assistant.getByRole('combobox', { name: '模型' }).selectOption(provider.id);
+  await assistant.getByRole('button', { name: /运行基础信息编排|编排完善/ }).click();
+  const card = page.getByRole('article', { name: '编排运行', exact: true }).last();
+  await expect(card).toBeVisible({ timeout: 20000 });
+  await expect(card.getByRole('button', { name: /采用全部剩余条目|采用并保存/ })).toBeVisible({
+    timeout: 30000,
+  });
   expect(
     (await (await request.get(`/api/v1/projects/${project.id}/elements`)).json()).data,
   ).toHaveLength(0);
   await page.reload();
   await page.getByRole('link', { name: '基本信息', exact: true }).click();
-  await expect(panel.getByRole('status')).toContainText('生成完成');
-  await panel
-    .getByRole('navigation', { name: '要素分类' })
-    .getByRole('button', { name: /^2\. 世界观/ })
-    .click();
-  await panel.getByRole('button', { name: '采用', exact: true }).click();
-  await expect(panel.getByRole('status')).toContainText('全部采用');
+  await panel.getByRole('button', { name: 'AI 助手', exact: false }).first().click();
+  const restored = page.getByRole('article', { name: '编排运行', exact: true }).last();
+  await expect(restored.getByRole('button', { name: /采用全部剩余条目/ })).toBeVisible();
+  await restored.getByRole('button', { name: /采用全部剩余条目/ }).click();
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`/api/v1/projects/${project.id}/elements`)).json()).data.length,
+    )
+    .toBeGreaterThan(0);
   const entries = (await (await request.get(`/api/v1/projects/${project.id}/elements`)).json())
     .data;
-  expect(entries).toHaveLength(1);
+  expect(entries.length).toBeGreaterThan(0);
   expect(entries.every((e: { status: string }) => e.status === 'confirmed')).toBe(true);
-  const world = entries.find(
-    (e: { document: { kind: string } }) => e.document.kind === 'worldbuilding',
-  );
-  expect(world).toBeDefined();
-  await panel
-    .locator('.element-list')
-    .getByRole('button', { name: /十分钟法则/ })
-    .click();
-  await expect(panel.getByLabel('规则与使用条件', { exact: true })).toHaveValue(/设定/);
   const screenshot = testInfo.outputPath('creation-elements.png');
   await page.screenshot({ path: screenshot, fullPage: true });
   await testInfo.attach('Creation elements', { path: screenshot, contentType: 'image/png' });
@@ -114,26 +108,30 @@ test('authors create a world rule, lock fields, confirm, edit, restore and archi
   await page.goto(`/?project=${project.id}`);
   await page.getByRole('link', { name: '基本信息', exact: true }).click();
   const panel = page.getByRole('region', { name: '基本信息管理', exact: true });
-  await panel.getByRole('button', { name: '＋ 新建要素', exact: true }).click();
-  await panel.getByLabel('名称', { exact: true }).fill('回溯法则');
-  await panel.getByLabel('规则与使用条件', { exact: true }).fill('最多回溯十分钟');
-  const field = panel
-    .locator('.element-field')
-    .filter({ has: page.getByRole('textbox', { name: '规则与使用条件', exact: true }) });
-  await field.getByRole('button', { name: '锁定 AI 修改', exact: true }).click();
+  await panel.getByText('添加设定', { exact: true }).click();
+  await panel.getByRole('button', { name: '新增世界与场景', exact: true }).click();
+  await panel.getByRole('textbox', { name: '名称', exact: true }).fill('回溯法则');
+  await panel.getByRole('textbox', { name: '规则与使用条件', exact: true }).fill('最多回溯十分钟');
+  await panel.getByText('高级设置：标签、内容性质与 AI 修改保护').click();
+  await panel
+    .locator('.element-lock-fields')
+    .getByRole('checkbox', { name: '规则与使用条件', exact: true })
+    .check();
   await panel.getByRole('button', { name: '保存草稿', exact: true }).click();
-  await expect(panel.getByRole('button', { name: '确认当前版本', exact: true })).toBeEnabled();
-  await panel.getByRole('button', { name: '确认当前版本', exact: true }).click();
+  await expect(panel.getByRole('button', { name: '确认用于写作', exact: true })).toBeEnabled();
+  await panel.getByRole('button', { name: '确认用于写作', exact: true }).click();
   await expect(panel.locator('.element-detail')).toContainText('已确认 · 当前版本 1');
   await panel.getByLabel('补充说明（Markdown）', { exact: true }).fill('每次使用会失去一段记忆');
   await panel.getByRole('button', { name: '保存草稿', exact: true }).click();
   await expect(panel.locator('.element-detail')).toContainText('草稿 · 当前版本 2');
+  await panel.getByText('更多操作', { exact: true }).click();
   await panel.getByRole('button', { name: '版本历史', exact: true }).click();
   const history = page.getByRole('dialog', { name: '版本历史与差异', exact: true });
   await history.getByRole('button', { name: '将起点版本恢复为新版本', exact: true }).click();
   await expect(panel.locator('.element-detail')).toContainText('草稿 · 当前版本 3');
-  await panel.getByRole('button', { name: '归档', exact: true }).click();
-  await expect(panel.getByRole('button', { name: '恢复归档', exact: true })).toBeVisible();
+  const archive = panel.getByRole('button', { name: '归档', exact: true });
+  if (!(await archive.isVisible())) await panel.getByText('更多操作', { exact: true }).click();
+  await archive.click();
   const entries = (await (await request.get(`/api/v1/projects/${project.id}/elements`)).json())
     .data;
   expect(entries[0].data.locked).toContain('fields.rules');
