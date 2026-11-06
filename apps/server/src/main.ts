@@ -28,7 +28,10 @@ async function main(): Promise<void> {
     gitReader(runtime.directories.temp),
   );
   runtime.onClose(() => skills.close());
-  const writing = new WritingService(runtime.db, novels, skills);
+  const writing = new WritingService(runtime.db, novels, skills, {
+    onBackgroundError: () =>
+      logger.error({ event: 'writing.background_failed', code: 'INTERNAL_ERROR' }),
+  });
   runtime.onClose(() => writing.close());
   const app = createApp({
     writing,

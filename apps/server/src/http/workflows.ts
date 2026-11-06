@@ -13,6 +13,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
 import type { WorkflowService } from '../workflows/service.js';
+import { writeSSEWithTimeout } from './sse.js';
 import { eventCursor } from './writing.js';
 
 export function workflowRoutes(service: WorkflowService) {
@@ -184,21 +185,11 @@ export function workflowRoutes(service: WorkflowService) {
         while (!stream.aborted) {
           const events = service.events(id, cursor) as { seq: number; type: string }[];
           for (const event of events) {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-              await Promise.race([
-                stream.writeSSE({
-                  id: String(event.seq),
-                  event: 'change',
-                  data: JSON.stringify(event),
-                }),
-                new Promise<never>((_, reject) => {
-                  timer = setTimeout(() => reject(new Error('slow client')), 5000);
-                }),
-              ]);
-            } finally {
-              clearTimeout(timer);
-            }
+            await writeSSEWithTimeout(stream, {
+              id: String(event.seq),
+              event: 'change',
+              data: JSON.stringify(event),
+            });
             cursor = event.seq;
           }
           if (['completed', 'cancelled'].includes(service.get(id).status) && events.length === 0)

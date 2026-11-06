@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { AppError } from '../errors.js';
 import { acceptOutlineCreation, rejectOutlineCreation } from '../writing/outlines.js';
 import type { WritingService } from '../writing/service.js';
+import { writeSSEWithTimeout } from './sse.js';
 
 export function eventCursor(header: string | undefined, query: string | undefined) {
   const raw = header !== undefined ? header : (query ?? '0');
@@ -225,19 +226,8 @@ export function writingRoutes(service: WritingService) {
     return streamSSE(c, async (stream) => {
       const detach = service.attachStream(() => stream.abort());
       let heartbeat = Date.now();
-      const send = async (value: Parameters<typeof stream.writeSSE>[0]) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([
-            stream.writeSSE(value),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error('slow client')), 5000);
-            }),
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
-      };
+      const send = (value: Parameters<typeof stream.writeSSE>[0]) =>
+        writeSSEWithTimeout(stream, value);
       try {
         await send({ event: 'ready', data: '{}', retry: 500 });
         while (!stream.aborted) {

@@ -13,6 +13,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import type { ElementService } from '../elements/service.js';
 import { AppError } from '../errors.js';
+import { writeSSEWithTimeout } from './sse.js';
 import { eventCursor } from './writing.js';
 
 export function elementRoutes(service: ElementService) {
@@ -158,21 +159,11 @@ export function elementRoutes(service: ElementService) {
         while (!stream.aborted) {
           const events = service.events(id, cursor);
           for (const event of events) {
-            let timeout: ReturnType<typeof setTimeout> | undefined;
-            try {
-              await Promise.race([
-                stream.writeSSE({
-                  id: String(event.seq),
-                  event: 'change',
-                  data: JSON.stringify(event),
-                }),
-                new Promise<never>((_, reject) => {
-                  timeout = setTimeout(() => reject(new Error('slow client')), 5000);
-                }),
-              ]);
-            } finally {
-              clearTimeout(timeout);
-            }
+            await writeSSEWithTimeout(stream, {
+              id: String(event.seq),
+              event: 'change',
+              data: JSON.stringify(event),
+            });
             cursor = event.seq;
           }
           if (!['queued', 'running'].includes(service.get(id).status) && !events.length) break;

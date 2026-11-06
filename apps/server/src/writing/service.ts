@@ -51,6 +51,8 @@ export class WritingService {
       env?: NodeJS.ProcessEnv;
       fetch?: typeof fetch;
       adapterFactory?: (request: ModelRequest) => ModelAdapter;
+      /** Called when a background pump fails; the failure is otherwise only visible in task state. */
+      onBackgroundError?: (error: unknown) => void;
     } = {},
   ) {
     this.store = new WritingStore(database, novels);
@@ -191,7 +193,7 @@ export class WritingService {
       .prepare("SELECT id FROM runs WHERE status='queued' ORDER BY created_at,id LIMIT 1")
       .get() as { id: string } | undefined;
     if (!row) {
-      void this.elements.pump().catch(() => {});
+      void this.elements.pump().catch((error: unknown) => this.options.onBackgroundError?.(error));
       return;
     }
     try {
