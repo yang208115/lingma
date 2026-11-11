@@ -4,6 +4,7 @@ const minimumWidth = 180;
 function dimensions(handle: HTMLDivElement) {
   const workbench = handle.parentElement;
   const sidebar = workbench?.querySelector(':scope > .outline-sidebar');
+  const assistant = workbench?.querySelector(':scope > .context-aside:not([hidden])');
   const editorMinimum = workbench
     ? Number.parseFloat(
         getComputedStyle(workbench).getPropertyValue('--outline-editor-min-width'),
@@ -11,7 +12,12 @@ function dimensions(handle: HTMLDivElement) {
     : 260;
   return {
     current: sidebar?.getBoundingClientRect().width ?? 260,
-    max: Math.max(minimumWidth, (workbench?.clientWidth ?? 1000) - editorMinimum - 300),
+    max: Math.max(
+      minimumWidth,
+      (workbench?.clientWidth ?? 1000) -
+        editorMinimum -
+        (assistant?.getBoundingClientRect().width ?? 0),
+    ),
   };
 }
 

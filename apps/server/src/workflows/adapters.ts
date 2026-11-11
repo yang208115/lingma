@@ -126,12 +126,17 @@ export type ResultBuild = { result: WorkflowResult; warnings: string[]; missing:
 /** Turns the final Markdown deliverable into the typed shape the saving code understands. */
 export function buildWorkflowResult(
   task: WorkflowTask,
-  input: Pick<WorkflowInput, 'targetDocumentId' | 'elementKinds' | 'elementTargets' | 'mode'>,
+  input: Pick<
+    WorkflowInput,
+    'targetDocumentId' | 'elementKinds' | 'elementTargets' | 'mode' | 'chapterCount'
+  >,
   markdown: string,
   allKinds: readonly ElementKind[],
 ): ResultBuild {
   const text = markdown.trim();
   if (!text) throw new AppError('VALIDATION_ERROR', '产物内容为空，请编辑后再继续', 400);
+  if (task === 'discussion')
+    return { result: { type: 'discussion_summary', content: text }, warnings: [], missing: [] };
   if (task === 'chapter_write') {
     const heading = h1Title(text);
     return {
@@ -165,7 +170,7 @@ export function buildWorkflowResult(
     };
   }
   const sections = splitRecordSections(text);
-  if (task === 'story_events') {
+  if (task === 'story_events' || task === 'chapter_planning') {
     const items = (
       sections.length
         ? sections.map((section) => ({ title: section.title, body: section.body }))
@@ -179,8 +184,19 @@ export function buildWorkflowResult(
         content: event.content || section.body,
       };
     });
+    if (task === 'chapter_planning' && input.chapterCount && items.length !== input.chapterCount)
+      throw new AppError(
+        'VALIDATION_ERROR',
+        `章纲数量不符：要求 ${input.chapterCount} 章，实际 ${items.length} 章，请修订后提交完整批次`,
+        400,
+      );
     return {
-      result: { type: 'outline_event_batch', items, reason: '事件规划', citations: [] },
+      result: {
+        type: task === 'chapter_planning' ? 'chapter_plan_batch' : 'outline_event_batch',
+        items,
+        reason: '分章或事件规划',
+        citations: [],
+      },
       warnings: sections.length ? [] : ['未找到“## 事件标题”，已把全文作为一个事件'],
       missing: [],
     };

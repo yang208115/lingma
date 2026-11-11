@@ -3,6 +3,8 @@ import {
   elementDataSchema,
   elementLabels,
   isBasicInformationKind,
+  isStoryEventKind,
+  isWritingPlanKind,
   linkedChapterIds,
   metadataSchema,
   normalizeOutlineMarkdown,
@@ -22,6 +24,48 @@ export function assertWorkflowTarget(
   acceptedDocumentIds: string[] = [],
 ) {
   store.novels.getProject(input.projectId);
+  if (input.volumeId && input.newVolumeTitle)
+    throw new AppError('VALIDATION_ERROR', '不能同时指定已有卷和新卷名称', 400);
+  if (
+    (input.volumeId || input.newVolumeTitle) &&
+    !['chapter_write', 'chapter_planning'].includes(input.taskType)
+  )
+    throw new AppError('VALIDATION_ERROR', '仅章纲或正文可指定所属卷', 400);
+  if (
+    input.volumeId &&
+    !store.novels
+      .getStructure(input.projectId)
+      .volumes.some((volume) => volume.id === input.volumeId)
+  )
+    throw new AppError('FORBIDDEN', '所属卷不在当前作品中', 403);
+  if (input.sourceOutlineId) {
+    const source = store.novels.getDocument(input.sourceOutlineId).document;
+    if (
+      !['chapter_write', 'chapter_planning'].includes(input.taskType) ||
+      input.targetDocumentId ||
+      input.mode !== 'create'
+    )
+      throw new AppError('VALIDATION_ERROR', '来源规划仅用于创建章纲或正文', 400);
+    const validKind =
+      input.taskType === 'chapter_planning'
+        ? isStoryEventKind(source.kind) || source.kind === 'master_outline'
+        : isWritingPlanKind(source.kind);
+    if (source.projectId !== input.projectId || source.archived || !validKind)
+      throw new AppError('FORBIDDEN', '来源规划不属于当前作品或已归档', 403);
+    if (
+      input.taskType === 'chapter_write' &&
+      source.kind === 'chapter_plan' &&
+      linkedChapterIds(source).some((id) => !acceptedDocumentIds.includes(id))
+    )
+      throw new AppError('VERSION_CONFLICT', '这份章纲已有关联正文，请打开正文继续编辑', 409);
+    const sourceSelected = store.db
+      .prepare(
+        'SELECT id FROM document_versions WHERE document_id=? AND id IN (SELECT value FROM json_each(?)) LIMIT 1',
+      )
+      .get(source.id, JSON.stringify(input.selectedVersionIds));
+    if (!sourceSelected)
+      throw new AppError('FORBIDDEN', '来源规划必须包含在本次明确引用的资料中', 403);
+  }
   if (Boolean(input.targetDocumentId) !== Boolean(input.baseVersionId))
     throw new AppError('VALIDATION_ERROR', '修改目标必须同时提供文档与基准版本', 400);
   if (input.taskType === 'basic_information') {
@@ -55,6 +99,8 @@ export function assertWorkflowTarget(
     worldbuilding: 'worldbuilding',
     master_outline: 'master_outline',
     story_events: 'chapter_outline',
+    chapter_planning: 'chapter_plan',
+    discussion: null,
   }[input.taskType];
   if (
     target.document.projectId !== input.projectId ||
@@ -78,11 +124,21 @@ export function normalizeWorkflowOutput(
   if (payload.type === 'chapter_draft' && !input.targetDocumentId && !payload.title?.trim())
     throw new AppError('VALIDATION_ERROR', '新建正文需要提供章节标题', 400);
   if (
-    payload.type === 'outline_event_batch' &&
+    (payload.type === 'outline_event_batch' || payload.type === 'chapter_plan_batch') &&
     input.targetDocumentId &&
     payload.items.length !== 1
   )
     throw new AppError('VALIDATION_ERROR', '修改已有事件只能提交一份对应候选', 400);
+  if (
+    payload.type === 'chapter_plan_batch' &&
+    input.chapterCount &&
+    payload.items.length !== input.chapterCount
+  )
+    throw new AppError(
+      'VALIDATION_ERROR',
+      `章纲数量不符：要求 ${input.chapterCount} 章，实际 ${payload.items.length} 章，请修订后提交完整批次`,
+      400,
+    );
   if ('citations' in payload) {
     for (const citation of payload.citations) {
       if (citation === 'author') continue;
@@ -226,6 +282,8 @@ export function acceptWorkflowOutput(store: WritingStore, w: WorkflowRun, itemId
     Object.values(w.snapshot.contexts).flatMap((context) => context.allowed),
     { allowPartialCategories: true },
   );
+  // Discussion artifacts and all turns are already persisted with the run.
+  if (payload.type === 'discussion_summary') return true;
   const pending =
     payload.type === 'element_candidates'
       ? payload.items.map((item) => item.tempId)
@@ -310,7 +368,7 @@ export function acceptWorkflowOutput(store: WritingStore, w: WorkflowRun, itemId
     return pending.every((id) => w.acceptedResults.some((item) => item.itemId === id));
   }
   const items =
-    payload.type === 'outline_event_batch'
+    payload.type === 'outline_event_batch' || payload.type === 'chapter_plan_batch'
       ? payload.items
       : payload.type === 'master_outline_candidate'
         ? [{ title: payload.title, content: payload.content }]
@@ -324,8 +382,15 @@ export function acceptWorkflowOutput(store: WritingStore, w: WorkflowRun, itemId
         ? 'chapter'
         : input.taskType === 'master_outline'
           ? 'master_outline'
-          : 'chapter_outline';
+          : input.taskType === 'chapter_planning'
+            ? 'chapter_plan'
+            : 'chapter_outline';
+    const sourcePlan = input.sourceOutlineId
+      ? store.novels.getDocument(input.sourceOutlineId).document
+      : null;
     const content = kind === 'chapter' ? item.content : normalizeOutlineMarkdown(item.content);
+    const storyTime = 'storyTime' in item ? item.storyTime : undefined;
+    const summary = 'summary' in item ? item.summary : undefined;
     const saved =
       input.targetDocumentId && input.baseVersionId
         ? store.novels.saveDocument(
@@ -345,9 +410,21 @@ export function acceptWorkflowOutput(store: WritingStore, w: WorkflowRun, itemId
               kind,
               title: item.title,
               content,
-              volumeId: null,
+              volumeId:
+                kind === 'chapter' && sourcePlan?.kind === 'chapter_plan'
+                  ? sourcePlan.volumeId
+                  : ['chapter', 'chapter_plan'].includes(kind)
+                    ? (input.volumeId ?? null)
+                    : null,
+              ...(['chapter', 'chapter_plan'].includes(kind) && input.newVolumeTitle
+                ? { newVolumeTitle: input.newVolumeTitle }
+                : {}),
+              ...(kind === 'chapter_plan'
+                ? { parentOutlineId: input.sourceOutlineId ?? null }
+                : {}),
               chapterId: null,
-              ...('storyTime' in item ? { storyTime: item.storyTime, summary: item.summary } : {}),
+              ...(storyTime !== undefined ? { storyTime } : {}),
+              ...(summary !== undefined ? { summary } : {}),
               metadata:
                 kind === 'master_outline'
                   ? { element: { schemaVersion: 1, nature: 'planned' } }
@@ -355,15 +432,18 @@ export function acceptWorkflowOutput(store: WritingStore, w: WorkflowRun, itemId
             },
             'proposal',
           );
-    if (input.targetDocumentId && kind === 'chapter_outline' && 'storyTime' in item)
+    if (input.targetDocumentId && ['chapter_outline', 'chapter_plan'].includes(kind))
       store.novels.updateStoryEvent(saved.document.id, {
         baseStructureVersion: store.novels.getProject(w.projectId).structureVersion,
         title: item.title,
-        storyTime: item.storyTime ?? '',
-        summary: item.summary ?? '',
+        storyTime: storyTime ?? '',
+        summary: summary ?? '',
         chapterIds: linkedChapterIds(saved.document),
       });
     else if (input.targetDocumentId) rename(store, w.projectId, saved.document.id, item.title);
+    if (kind === 'chapter' && input.sourceOutlineId) {
+      store.novels.linkPlanChapter(input.sourceOutlineId, saved.document.id);
+    }
     if (kind === 'master_outline') confirm(store, saved.document.id, saved.version.id);
     w.acceptedResults.push({
       itemId: `${artifact.id}:${index}`,

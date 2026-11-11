@@ -220,6 +220,7 @@ export const elementGenerationInputSchema = z.strictObject({
   characterCount: z.int().min(1).max(10).default(3),
   maxCalls: z.int().min(1).max(20).default(12),
   expectedHash: z.string().optional(),
+  guided: z.boolean().default(false),
 });
 export type ElementGenerationInput = z.infer<typeof elementGenerationInputSchema>;
 // Keep the original schema readable for stored task history; new requests are single-category.
@@ -239,6 +240,23 @@ export const elementCandidatePayloadSchema = z.strictObject({
 });
 export const elementBatchSchema = z.strictObject({
   items: z.array(elementCandidatePayloadSchema).min(1).max(30),
+});
+export const elementGuidanceSchema = z.strictObject({
+  reply: z.string().trim().min(1).max(6000),
+  question: z.string().trim().min(1).max(2000),
+});
+export const guidedElementBatchSchema = z.strictObject({
+  items: z.array(elementCandidatePayloadSchema).max(10),
+  guidance: elementGuidanceSchema,
+});
+export const basicInformationBatchProposalSchema = z.strictObject({
+  items: z
+    .array(elementCandidatePayloadSchema.extend({ kind: z.enum(basicInformationKinds) }))
+    .min(1)
+    .max(10)
+    .describe(
+      '一次提交本轮所有受影响的设定，可同时包含多个分类、多个已有条目的修改和新增条目。已有条目填写其实际 targetDocumentId，并提供修改后的完整内容；每个目标只出现一次。',
+    ),
 });
 export const elementCandidateSchema = elementCandidatePayloadSchema.extend({
   id: idSchema,
@@ -271,6 +289,7 @@ export const elementGenerationSchema = z.strictObject({
   reviewStatus: z.enum(['pending', 'partially_accepted', 'accepted', 'rejected', 'processed']),
   lastEventSeq: z.int().nonnegative(),
   candidates: z.array(elementCandidateSchema),
+  guidance: elementGuidanceSchema.nullable().default(null),
   usage: usageTotalSchema,
   createdAt: timestampSchema,
 });

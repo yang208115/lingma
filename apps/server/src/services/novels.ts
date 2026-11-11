@@ -11,6 +11,7 @@ import {
   type ImportResult,
   isElementKind,
   isStoryEventKind,
+  isWritingPlanKind,
   linkedChapterIds,
   metadataSchema,
   type NovelSave,
@@ -21,6 +22,7 @@ import {
   readElementData,
   type StartOutlineWriting,
   type Structure,
+  type UpdateChapterPlan,
   type UpdateStoryEvent,
   validateElementFields,
   volumeSchema,
@@ -57,6 +59,7 @@ function document(row: Row): Document {
     kind: row.kind,
     chapterId: row.chapter_id,
     chapterIds: JSON.parse(String(row.chapter_ids ?? '[]')),
+    parentOutlineId: row.parent_outline_id ?? null,
     storyTime:
       row.kind === 'timeline_event' ? String(row.legacy_story_time ?? '') : (row.story_time ?? ''),
     summary:
@@ -270,9 +273,9 @@ export class NovelService {
         const original = current.documents.find((entry) => entry.id === item.id);
         if (
           (item.volumeId && !volumeIds.has(item.volumeId)) ||
-          (original?.kind !== 'chapter' && item.volumeId !== null)
+          (!['chapter', 'chapter_plan'].includes(original?.kind ?? '') && item.volumeId !== null)
         )
-          throw new AppError('VALIDATION_ERROR', '只有正文可以关联本作品的卷', 400);
+          throw new AppError('VALIDATION_ERROR', '只有正文或章纲可以关联本作品的卷', 400);
         db.prepare(
           'UPDATE documents SET title=?,volume_id=?,sort_order=? WHERE id=? AND project_id=?',
         ).run(item.title, item.volumeId, item.sortOrder, item.id, id);
@@ -352,7 +355,7 @@ export class NovelService {
     const versionId = randomUUID();
     this.db
       .prepare(
-        'INSERT INTO documents(id,project_id,volume_id,kind,chapter_id,title,sort_order,current_version_id,story_time,summary) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO documents(id,project_id,volume_id,kind,chapter_id,title,sort_order,current_version_id,story_time,summary,parent_outline_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
       )
       .run(
         id,
@@ -363,8 +366,9 @@ export class NovelService {
         input.title,
         sortOrder,
         versionId,
-        input.kind === 'chapter_outline' ? (input.storyTime ?? '') : '',
-        input.kind === 'chapter_outline' ? (input.summary ?? '') : '',
+        isWritingPlanKind(input.kind) ? (input.storyTime ?? '') : '',
+        isWritingPlanKind(input.kind) ? (input.summary ?? '') : '',
+        input.parentOutlineId ?? null,
       );
     this.insertVersion(id, versionId, 1, input.content, input.metadata, source);
     if (input.chapterId)
@@ -405,6 +409,7 @@ export class NovelService {
       this.checkStructure(projectId, input.baseStructureVersion);
       this.validateElement(projectId, input.kind, input.metadata);
       this.ownVolume(projectId, input.volumeId);
+      if (input.parentOutlineId) this.assertPlanParent(projectId, input.parentOutlineId);
       if (input.chapterId) {
         const chapter = this.getDocument(input.chapterId).document;
         if (chapter.projectId !== projectId || chapter.kind !== 'chapter')
@@ -412,8 +417,8 @@ export class NovelService {
       }
       let volumeId = input.volumeId;
       if (input.newVolumeTitle) {
-        if (input.kind !== 'chapter' || volumeId !== null)
-          throw new AppError('VALIDATION_ERROR', '仅正文可新建卷，且不能同时指定已有卷', 400);
+        if (!['chapter', 'chapter_plan'].includes(input.kind) || volumeId !== null)
+          throw new AppError('VALIDATION_ERROR', '仅正文或章纲可新建卷，且不能同时指定已有卷', 400);
         const title = input.newVolumeTitle.trim();
         if (!title || title.length > 200)
           throw new AppError('VALIDATION_ERROR', '卷名称需为 1–200 个字符', 400);
@@ -451,7 +456,7 @@ export class NovelService {
   startOutlineWriting(id: string, input: StartOutlineWriting): DocumentDetail {
     return this.database.transaction(() => {
       const outline = this.assertVersion(id, input.baseVersionId).document;
-      if (!isStoryEventKind(outline.kind))
+      if (!isWritingPlanKind(outline.kind))
         throw new AppError('VALIDATION_ERROR', '请选择故事事件开始写作', 400);
       const existing = linkedChapterIds(outline)[0];
       if (!input.newChapterTitle && existing) return this.getDocument(existing);
@@ -462,7 +467,7 @@ export class NovelService {
         {
           kind: 'chapter',
           title: input.newChapterTitle ?? outline.title,
-          volumeId: input.volumeId,
+          volumeId: outline.kind === 'chapter_plan' ? outline.volumeId : input.volumeId,
           chapterId: null,
           content: '',
           metadata: {},
@@ -478,11 +483,13 @@ export class NovelService {
       this.db
         .prepare('INSERT INTO outline_chapters(outline_id,chapter_id,project_id) VALUES(?,?,?)')
         .run(id, chapter.document.id, outline.projectId);
-      if (outline.kind === 'chapter_outline' && !outline.chapterId)
+      if (['chapter_outline', 'chapter_plan'].includes(outline.kind) && !outline.chapterId)
         this.db
           .prepare('UPDATE documents SET chapter_id=? WHERE id=?')
           .run(chapter.document.id, id);
       this.bump(outline.projectId);
+      if (outline.kind === 'chapter_plan' && outline.parentOutlineId)
+        this.linkPlanChapter(outline.parentOutlineId, chapter.document.id);
       return chapter;
     });
   }
@@ -490,10 +497,10 @@ export class NovelService {
     return this.database.transaction((db) => {
       const current = this.getDocument(id);
       const event = current.document;
-      if (!isStoryEventKind(event.kind))
+      if (!isWritingPlanKind(event.kind))
         throw new AppError('VALIDATION_ERROR', '请选择故事时间线中的事件', 400);
       if (
-        event.kind === 'chapter_outline' &&
+        ['chapter_outline', 'chapter_plan'].includes(event.kind) &&
         (input.storyTime.length > 200 || input.summary.length > 1000)
       )
         throw new AppError('VALIDATION_ERROR', '事件时间最多 200 字符，概述最多 1000 字符', 400);
@@ -507,7 +514,9 @@ export class NovelService {
         input.title,
         input.storyTime.slice(0, 200),
         input.summary.slice(0, 1000),
-        event.kind === 'chapter_outline' ? (input.chapterIds[0] ?? null) : null,
+        ['chapter_outline', 'chapter_plan'].includes(event.kind)
+          ? (input.chapterIds[0] ?? null)
+          : null,
         id,
       );
       if (event.kind === 'timeline_event') {
@@ -533,6 +542,43 @@ export class NovelService {
       this.bump(event.projectId);
       return this.getDocument(id);
     });
+  }
+  private assertPlanParent(projectId: string, parentId: string): void {
+    const parent = this.getDocument(parentId).document;
+    if (
+      parent.projectId !== projectId ||
+      parent.archived ||
+      !(isStoryEventKind(parent.kind) || parent.kind === 'master_outline')
+    )
+      throw new AppError('VALIDATION_ERROR', '章纲来源必须是当前作品的总纲或故事规划', 400);
+  }
+  updateChapterPlan(id: string, input: UpdateChapterPlan): DocumentDetail {
+    return this.database.transaction((db) => {
+      const plan = this.getDocument(id).document;
+      if (plan.kind !== 'chapter_plan') throw new AppError('VALIDATION_ERROR', '请选择章纲', 400);
+      this.checkStructure(plan.projectId, input.baseStructureVersion);
+      this.ownVolume(plan.projectId, input.volumeId);
+      if (input.parentOutlineId) this.assertPlanParent(plan.projectId, input.parentOutlineId);
+      db.prepare('UPDATE documents SET parent_outline_id=?,volume_id=? WHERE id=?').run(
+        input.parentOutlineId,
+        input.volumeId,
+        id,
+      );
+      return this.updateStoryEvent(id, input);
+    });
+  }
+  linkPlanChapter(id: string, chapterId: string): void {
+    const plan = this.getDocument(id).document;
+    if (!isWritingPlanKind(plan.kind)) return;
+    this.updateStoryEvent(id, {
+      baseStructureVersion: this.getProject(plan.projectId).structureVersion,
+      title: plan.title,
+      storyTime: plan.storyTime ?? '',
+      summary: plan.summary ?? '',
+      chapterIds: [...new Set([...linkedChapterIds(plan), chapterId])],
+    });
+    if (plan.kind === 'chapter_plan' && plan.parentOutlineId)
+      this.linkPlanChapter(plan.parentOutlineId, chapterId);
   }
   saveDocument(
     id: string,
@@ -591,9 +637,10 @@ export class NovelService {
       db.prepare('DELETE FROM outline_chapters WHERE outline_id=? OR chapter_id=?').run(id, id);
       db.prepare(`UPDATE documents SET chapter_id=(
         SELECT chapter_id FROM outline_chapters WHERE outline_id=documents.id ORDER BY chapter_id LIMIT 1
-      ) WHERE project_id=? AND kind='chapter_outline' AND chapter_id IS NULL`).run(
+      ) WHERE project_id=? AND kind IN ('chapter_outline','chapter_plan') AND chapter_id IS NULL`).run(
         current.document.projectId,
       );
+      db.prepare('UPDATE documents SET parent_outline_id=NULL WHERE parent_outline_id=?').run(id);
       db.prepare('UPDATE documents SET deleted_at=? WHERE id=?').run(new Date().toISOString(), id);
       this.bump(current.document.projectId);
     });

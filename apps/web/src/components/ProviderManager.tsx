@@ -69,6 +69,7 @@ export function ProviderManager({ onClose }: { onClose(): void }) {
         <label>
           已有配置
           <select
+            disabled={busy}
             value={selected?.id ?? ''}
             onChange={(e) => {
               const config = configs.find((item) => item.id === e.target.value) ?? null;
@@ -249,6 +250,31 @@ export function ProviderManager({ onClose }: { onClose(): void }) {
               }}
             >
               检查已保存连接
+            </button>
+            <button
+              className="danger"
+              disabled={busy || !selected}
+              type="button"
+              onClick={() => {
+                if (
+                  !selected ||
+                  !window.confirm(
+                    `确定删除模型配置“${selected.config.name}”？删除后无法恢复，当前未保存的编辑也会丢弃。使用此配置的角色需重新选择模型，历史写作记录保留。`,
+                  )
+                )
+                  return;
+                void run(async () => {
+                  await writingApi.deleteProvider(selected.id, selected.revision);
+                  setConfigs((items) => items.filter((item) => item.id !== selected.id));
+                  setSelected(null);
+                  setForm(structuredClone(blank));
+                  setBaseline(JSON.stringify(blank));
+                  setApiKey('');
+                  setNote('模型配置已删除');
+                });
+              }}
+            >
+              删除配置
             </button>
           </div>
         </form>

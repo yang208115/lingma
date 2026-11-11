@@ -34,6 +34,14 @@ export const writingApi = {
       )
     ).data,
   providers: () => request('/provider-configs', pageSchema(providerSchema)),
+  deleteProvider: async (id: string, revision: number) =>
+    (
+      await request(
+        `/provider-configs/${id}`,
+        responseSchema(providerSchema),
+        json({ revision }, undefined, 'DELETE'),
+      )
+    ).data,
   saveProvider: async (config: ProviderInput, id?: string, revision?: number, apiKey?: string) =>
     (
       await request(
@@ -63,7 +71,9 @@ export const writingApi = {
       `/runs?projectId=${project}&limit=50${session ? `&sessionId=${session}` : ''}${cursor ? `&cursor=${cursor}` : ''}`,
       pageSchema(runSummarySchema),
     ),
-  run: async (id: string) => (await request(`/runs/${id}`, responseSchema(runDetailSchema))).data,
+  run: async (id: string, signal?: AbortSignal) =>
+    (await request(`/runs/${id}`, responseSchema(runDetailSchema), { signal: signal ?? null }))
+      .data,
   cancel: async (id: string) =>
     (await request(`/runs/${id}/cancel`, responseSchema(runSummarySchema), { method: 'POST' }))
       .data,

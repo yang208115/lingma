@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { piConnectionSchema } from './agent.js';
 import {
   documentKindSchema,
   hashSchema,
@@ -39,8 +40,8 @@ export const agentProfileConfigSchema = z.preprocess(
     contextKinds: z
       .array(documentKindSchema)
       .min(1)
-      .max(10)
-      .default(['chapter', 'master_outline', 'chapter_outline', 'character']),
+      .max(documentKindSchema.options.length)
+      .default(['chapter', 'master_outline', 'chapter_outline', 'chapter_plan', 'character']),
   }),
 );
 export const agentProfileVersionSchema = z.strictObject({
@@ -62,7 +63,28 @@ export const agentProfileSchema = z.strictObject({
 export const workflowStepSchema = z.strictObject({
   key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,49}$/),
   name: z.string().trim().min(1).max(100),
-  stage: z.enum(['plan', 'draft', 'generate', 'review', 'analysis', 'revise']),
+  stage: z.enum(['plan', 'draft', 'generate', 'review', 'analysis', 'revise', 'agent', 'debate']),
+  debate: z
+    .strictObject({
+      rounds: z.int().min(1).max(20),
+      participants: z
+        .array(
+          z.strictObject({
+            name: z.string().trim().min(1).max(100),
+            agentVersionId: idSchema,
+            instructions: z.string().max(8000),
+          }),
+        )
+        .min(2)
+        .max(8),
+    })
+    .optional(),
+  instructions: z.string().max(8000).optional(),
+  feedbackFrom: z
+    .array(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,49}$/))
+    .max(16)
+    .optional(),
+  runWhen: z.enum(['each_round', 'after_rounds']).optional(),
   agentVersionId: idSchema,
   required: z.boolean().default(true),
   gate: z.enum(['auto', 'manual']).default('auto'),
@@ -84,7 +106,10 @@ export const workflowTemplateConfigSchema = z.preprocess(
     .strictObject({
       name: z.string().trim().min(1).max(100),
       taskType: workflowTaskSchema.default('chapter_write'),
-      steps: z.array(workflowStepSchema).min(2).max(16),
+      steps: z.array(workflowStepSchema).min(1).max(16),
+      executionMode: z.enum(['review', 'graph']).optional(),
+      maxRounds: z.int().min(1).max(20).optional(),
+      outputNodeKey: z.string().max(50).optional(),
       autoRevise: z.boolean().default(true),
       adoptionGate: z.enum(['auto', 'manual']).default('auto'),
     })
@@ -92,6 +117,10 @@ export const workflowTemplateConfigSchema = z.preprocess(
       const fail = (message: string, path: (string | number)[] = ['steps']) =>
         ctx.addIssue({ code: 'custom', message, path });
       const steps = value.steps;
+      for (const step of steps) {
+        if (step.stage === 'debate' && !step.debate) fail('请配置辩论参与者与轮数');
+        if (step.stage !== 'debate' && step.debate) fail('辩论配置只能用于多 Agent 辩论节点');
+      }
       if (new Set(steps.map((s) => s.key)).size !== steps.length) {
         fail('节点标识不能重复');
         return;
@@ -102,6 +131,38 @@ export const workflowTemplateConfigSchema = z.preprocess(
         fail(error instanceof Error ? error.message : '流程连线无效');
         return;
       }
+      if (value.executionMode === 'graph') {
+        if (steps.some((step) => step.stage !== 'agent')) fail('自由图中的每个节点都必须是 Agent');
+        if (!steps.some((step) => step.key === value.outputNodeKey))
+          fail('请选择最终输出 Agent', ['outputNodeKey']);
+        if (!steps.some((step) => step.runWhen !== 'after_rounds'))
+          fail('至少需要一个每轮发言的 Agent');
+        for (const step of steps) {
+          const feedback = step.feedbackFrom ?? [];
+          if (new Set(feedback).size !== feedback.length) fail('反馈连线不能重复');
+          if (feedback.some((key) => !steps.some((source) => source.key === key)))
+            fail(`「${step.name}」的反馈连线引用了不存在的 Agent`);
+          if (
+            feedback.some(
+              (key) => steps.find((source) => source.key === key)?.runWhen === 'after_rounds',
+            )
+          )
+            fail('汇总 Agent 只在辩论结束后运行，不能反馈到辩论中');
+          if (step.runWhen === 'after_rounds' && feedback.length)
+            fail('汇总 Agent 请用普通连线接收最后一轮发言');
+          if (
+            step.runWhen !== 'after_rounds' &&
+            step.dependsOn.some(
+              (key) => steps.find((source) => source.key === key)?.runWhen === 'after_rounds',
+            )
+          )
+            fail('每轮发言的 Agent 不能等待辩论结束后的汇总');
+        }
+        return;
+      }
+      if (steps.length < 2) fail('审校流程至少需要两个节点');
+      if (steps.some((step) => step.stage === 'agent' || step.feedbackFrom?.length))
+        fail('Agent 节点与反馈连线请使用自由 Agent 图');
       const outputs = steps.filter((s) => ['draft', 'generate'].includes(s.stage));
       if (!outputs.length) fail('至少需要一个生成节点');
       if (!steps.some((s) => s.stage === 'review' && s.required)) fail('至少需要一个必需审校');
@@ -153,6 +214,10 @@ export const workflowInputSchema = z.strictObject({
   taskType: workflowTaskSchema.default('chapter_write'),
   sessionId: idSchema.nullable().default(null),
   targetDocumentId: idSchema.nullable().default(null),
+  sourceOutlineId: idSchema.optional(),
+  volumeId: idSchema.nullable().optional(),
+  newVolumeTitle: z.string().trim().min(1).max(200).optional(),
+  chapterCount: z.int().min(1).max(30).optional(),
   baseVersionId: idSchema.nullable().default(null),
   mode: z.enum(['create', 'fill', 'replace', 'extract']).default('create'),
   elementKinds: z
@@ -178,6 +243,15 @@ export const workflowInputSchema = z.strictObject({
   manualGates: z.boolean().default(false),
   expectedPreviewHash: hashSchema.optional(),
 });
+export const workflowContextPreviewSchema = contextPreviewSchema.extend({
+  request: contextPreviewSchema.shape.request.extend({
+    connectionSnapshot: z.preprocess(
+      // Old workflows may contain transport settings; never freeze or reuse them.
+      (value) => discardLegacyLimits(value, ['baseUrl', 'credentialRef']),
+      piConnectionSchema.omit({ baseUrl: true, credentialRef: true }),
+    ),
+  }),
+});
 export const workflowPreviewSchema = z.preprocess(
   (value) => discardLegacyLimits(value, ['maxNodeAttempts']),
   z.strictObject({
@@ -185,7 +259,7 @@ export const workflowPreviewSchema = z.preprocess(
     input: workflowInputSchema,
     template: workflowTemplateVersionSchema,
     profiles: z.array(agentProfileVersionSchema),
-    contexts: z.record(z.string(), contextPreviewSchema),
+    contexts: z.record(z.string(), workflowContextPreviewSchema),
     warnings: z.array(z.string()),
   }),
 );
@@ -197,6 +271,8 @@ export const workflowNodeStageSchema = z.enum([
   'analysis',
   'revise',
   'merge',
+  'agent',
+  'debate',
 ]);
 export const workflowNodeStatusSchema = z.enum([
   'pending',
@@ -215,6 +291,8 @@ export const workflowNodeSchema = z.strictObject({
   key: z.string(),
   templateKey: z.string(),
   round: z.int().nonnegative(),
+  debateRound: z.int().nonnegative().optional(),
+  debateParticipant: z.int().nonnegative().optional(),
   name: z.string(),
   stage: workflowNodeStageSchema,
   agentVersionId: idSchema.nullable(),

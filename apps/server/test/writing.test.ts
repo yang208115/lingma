@@ -169,6 +169,133 @@ const actionContext = () => ({
   signal: new AbortController().signal,
 });
 
+it('deletes a provider and its checks through HTTP while preserving completed writing history', async () => {
+  const f = await fixture(undefined, false);
+  const run = await done(f.writing, (await f.writing.create(f.input, randomUUID())).id);
+  await f.writing.checkProvider(f.provider.id);
+  expect(f.writing.checks(f.provider.id)).toHaveLength(1);
+  const path = `http://localhost/api/v1/provider-configs/${f.provider.id}`;
+  const remove = (body: unknown) =>
+    f.app.request(path, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  expect((await remove({})).status).toBe(400);
+  expect((await remove({ revision: 0 })).status).toBe(400);
+  expect((await remove({ revision: f.provider.revision + 1 })).status).toBe(409);
+  expect(f.writing.providers.get(f.provider.id).id).toBe(f.provider.id);
+  const response = await remove({ revision: f.provider.revision });
+  expect(response.status).toBe(200);
+  expect((await response.json()).data.id).toBe(f.provider.id);
+  expect(f.writing.providers.list()).toEqual([]);
+  expect(
+    f.runtime.db.connection
+      .prepare('SELECT id FROM provider_checks WHERE provider_id=?')
+      .all(f.provider.id),
+  ).toEqual([]);
+  expect(f.writing.store.detail(run.id)).toEqual(run);
+  expect((await f.app.request(path)).status).toBe(404);
+  expect((await remove({ revision: f.provider.revision })).status).toBe(404);
+});
+
+it.each(['queued', 'running', 'cancelling'])(
+  'prevents deleting a provider used by a %s writing run',
+  async (status) => {
+    const f = await fixture(undefined, false);
+    const preview = await f.writing.preview(f.input);
+    const run = f.runtime.db.transaction(() => f.writing.store.create(f.input, preview));
+    f.runtime.db.connection.prepare('UPDATE runs SET status=? WHERE id=?').run(status, run.id);
+    expect(() => f.writing.deleteProvider(f.provider.id, f.provider.revision)).toThrow(
+      expect.objectContaining({ code: 'PROJECT_BUSY' }),
+    );
+    const other = f.writing.providers.save({ ...f.provider.config, name: '未使用的模型' });
+    expect(f.writing.deleteProvider(other.id, other.revision).id).toBe(other.id);
+    expect(f.writing.providers.get(f.provider.id).id).toBe(f.provider.id);
+  },
+);
+
+it.each(['queued', 'running'])(
+  'prevents deleting a provider used by a %s basic-information job between model calls',
+  async (status) => {
+    const f = await fixture(undefined, false);
+    const id = randomUUID();
+    f.runtime.db.connection
+      .prepare(
+        'INSERT INTO element_generation_jobs(id,project_id,input_json,snapshot_json,status,created_at) VALUES(?,?,?,?,?,?)',
+      )
+      .run(
+        id,
+        f.project.id,
+        JSON.stringify({ providerConfigId: f.provider.id }),
+        '{}',
+        status,
+        new Date().toISOString(),
+      );
+    expect(() => f.writing.deleteProvider(f.provider.id, f.provider.revision)).toThrow(
+      expect.objectContaining({ code: 'PROJECT_BUSY' }),
+    );
+    f.runtime.db.connection
+      .prepare("UPDATE element_generation_jobs SET status='cancelled' WHERE id=?")
+      .run(id);
+    expect(f.writing.deleteProvider(f.provider.id, f.provider.revision).id).toBe(f.provider.id);
+  },
+);
+
+it.each(['default', 'profile'])(
+  'prevents deleting a provider referenced by a paused workflow (%s)',
+  async (source) => {
+    const f = await fixture(undefined, false);
+    const workflowId = randomUUID();
+    const snapshot = {
+      input: { providerConfigId: source === 'default' ? f.provider.id : randomUUID() },
+      profiles: [{ config: { providerConfigId: source === 'profile' ? f.provider.id : null } }],
+    };
+    f.runtime.db.connection
+      .prepare('INSERT INTO workflow_runs VALUES(?,?,?,?,?,?)')
+      .run(
+        workflowId,
+        f.project.id,
+        'paused',
+        JSON.stringify({ snapshot }),
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+    expect(() => f.writing.deleteProvider(f.provider.id, f.provider.revision)).toThrow(
+      expect.objectContaining({ code: 'PROJECT_BUSY' }),
+    );
+    f.runtime.db.connection
+      .prepare("UPDATE workflow_runs SET status='cancelled' WHERE id=?")
+      .run(workflowId);
+    expect(f.writing.deleteProvider(f.provider.id, f.provider.revision).id).toBe(f.provider.id);
+  },
+);
+
+it('prevents deleting a provider during its connection check', async () => {
+  const f = await fixture(undefined, false);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.spyOn(f.writing.providers, 'adapter').mockReturnValue({
+    id: 'connection-check-test',
+    async *stream() {
+      await gate;
+      yield answer('OK');
+    },
+  });
+  const check = f.writing.checkProvider(f.provider.id);
+  try {
+    expect(() => f.writing.deleteProvider(f.provider.id, f.provider.revision)).toThrow(
+      expect.objectContaining({ code: 'PROJECT_BUSY' }),
+    );
+  } finally {
+    release();
+    await check;
+  }
+  expect(f.writing.deleteProvider(f.provider.id, f.provider.revision).id).toBe(f.provider.id);
+});
+
 it('exposes general and current-project skills to writing and rejects a pinned skill from another project', async () => {
   const f = await fixture();
   const other = f.novels.createProject('另一项目');

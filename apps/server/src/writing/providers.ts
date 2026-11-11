@@ -67,6 +67,39 @@ export class ProviderService {
         .all() as { id: string }[]
     ).map((row) => this.get(row.id));
   }
+  delete(id: string, revision: number) {
+    return this.database.transaction((db) => {
+      const provider = this.get(id);
+      if (provider.revision !== revision)
+        throw new AppError('VERSION_CONFLICT', '模型配置已变化，请刷新后再删除', 409);
+      if (
+        db
+          .prepare(
+            "SELECT id FROM runs WHERE status IN ('queued','running','cancelling') AND json_extract(input_json,'$.providerConfigId')=? LIMIT 1",
+          )
+          .get(id) ||
+        db
+          .prepare(
+            "SELECT id FROM element_generation_jobs WHERE status IN ('queued','running') AND json_extract(input_json,'$.providerConfigId')=? LIMIT 1",
+          )
+          .get(id) ||
+        db
+          .prepare(
+            `SELECT id FROM workflow_runs
+             WHERE status IN ('queued','running','awaiting_input','awaiting_acceptance','paused','interrupted','failed','limited')
+             AND (json_extract(state_json,'$.snapshot.input.providerConfigId')=?
+               OR EXISTS (SELECT 1 FROM json_each(state_json,'$.snapshot.profiles')
+                 WHERE json_extract(value,'$.config.providerConfigId')=?)) LIMIT 1`,
+          )
+          .get(id, id)
+      )
+        throw new AppError('PROJECT_BUSY', '该模型配置仍被任务使用，请先结束相关运行或工作流', 409);
+      db.prepare('DELETE FROM provider_checks WHERE provider_id=?').run(id);
+      db.prepare('DELETE FROM provider_configs WHERE id=?').run(id);
+      // Historical snapshots may still reference local credentials for explicit retries.
+      return provider;
+    });
+  }
   save(raw: ProviderInput, id: string = randomUUID(), revision?: number, apiKey?: string) {
     const input = providerInputSchema.parse(raw);
     const reference = apiKey ? `local:${randomUUID()}` : undefined;

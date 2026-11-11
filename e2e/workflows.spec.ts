@@ -80,7 +80,10 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   await dialog.getByRole('button', { name: '保存并发布 Agent', exact: true }).click();
   await expect(dialog.getByRole('status').filter({ hasText: '已发布角色版本' })).toBeVisible();
   await dialog.getByRole('link', { name: '工作流模板', exact: true }).click();
-  await dialog.locator('aside button').first().click();
+  await dialog
+    .locator('.workflow-template-columns > aside button')
+    .filter({ hasText: '单章协作写作' })
+    .click();
   await dialog.getByRole('button', { name: '复制为新模板', exact: true }).click();
   const templateName = `悬疑流程-${crypto.randomUUID().slice(0, 8)}`;
   await dialog.getByLabel('模板名称', { exact: true }).fill(templateName);
@@ -117,11 +120,15 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   await expect(card.getByRole('button', { name: '采用并保存正文写作', exact: true })).toBeVisible();
   await page.reload();
   await expect(card.getByRole('button', { name: '采用并保存正文写作', exact: true })).toBeVisible();
+  await expect(card.locator('.workflow-execution-history')).not.toHaveAttribute('open');
+  await expect(card.getByRole('button', { name: '预览当前正文', exact: true })).toBeVisible();
   // The run graph colours each node by its live status.
+  await card.locator('.workflow-execution-history > summary').click();
   await card.getByText('流程图（节点状态）', { exact: true }).click();
   await expect(card.locator('.workflow-graph-node.run-released').first()).toBeVisible();
   await card.getByText('流程图（节点状态）', { exact: true }).click();
   // Every node's returned content is readable without leaving the card.
+  await card.getByText('初稿与首次审校', { exact: true }).click();
   await card.getByText('查看返回内容', { exact: false }).first().click();
   await expect(card.locator('.workflow-plan-box').first()).toBeVisible();
   // A node's output opens as an editor tab with the full text.
@@ -136,7 +143,8 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   await page.screenshot({ path: screen, fullPage: true });
   await testInfo.attach('自定义 Agent 协作写作', { path: screen, contentType: 'image/png' });
   await card.getByRole('button', { name: '采用并保存正文写作', exact: true }).click();
-  await expect(card.getByRole('status').first()).toHaveText('已结束');
+  await expect(card.getByRole('status').first()).toHaveText('正文已保存');
+  await expect(card.getByRole('link', { name: '打开正文', exact: true })).toBeVisible();
   await expect(page.getByLabel('文档正文', { exact: true })).toHaveValue(
     '林舟用左手拨开窗栓。雨声里，来客的说辞露出了破绽。',
   );
@@ -148,9 +156,9 @@ test('creates a custom Agent, adds it to a template, resumes the chapter flow af
   await page.getByLabel('写作任务', { exact: true }).fill('手动放行的新一章。');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   const manual = page.getByRole('article', { name: '编排运行', exact: true }).last();
-  const release = manual.getByRole('button', { name: /^放行/ });
+  const release = manual.getByRole('button', { name: /^确认并继续/ });
   await expect(release).toBeVisible();
-  await expect(manual).toContainText('等待放行');
+  await expect(manual.getByRole('status').first()).toContainText('请确认');
   for (let i = 0; i < 8; i++) {
     if (await manual.getByRole('button', { name: '采用并保存正文写作', exact: true }).isVisible())
       break;

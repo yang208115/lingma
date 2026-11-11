@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-灵码：AI 小说写作工作台。全栈 TypeScript，pnpm workspace（Node 22.19–22.x，pnpm 11.5.2，用 pnpm 不要用 npm）。项目文档以中文为主，详见 `README.md` 与 `docs/`（每个功能模块有对应的实施说明，如 `docs/P05-写作流程实施.md`、`docs/MA-通用编排与流程画布实施.md`）。
+灵码：AI 小说写作工作台。全栈 TypeScript，pnpm workspace（Node 22.19–22.x，pnpm 11.5.2，用 pnpm 不要用 npm）。项目文档以中文为主，先看 `README.md` 与 `docs/README.md`（每个功能模块有对应的实施说明，如 `docs/P05-写作流程实施.md`、`docs/MA-通用编排与流程画布实施.md`）。
 
 ## 常用命令
 

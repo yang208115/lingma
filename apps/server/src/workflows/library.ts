@@ -22,8 +22,9 @@ export class AgentLibrary {
     readonly store: WritingStore,
     readonly skills: SkillService,
   ) {
-    this.seed();
+    this.seedChapterTemplate();
     this.seedCreativeTemplates();
+    this.seedDebateTemplate();
   }
   get db(): WritingStore['db'] {
     return this.store.db;
@@ -190,12 +191,18 @@ export class AgentLibrary {
       const p = this.profileVersion(s.agentVersionId);
       const required =
         s.stage === 'revise' ? (c.taskType === 'chapter_write' ? 'draft' : 'generate') : s.stage;
-      if (p.config.capability !== required)
+      if (c.executionMode !== 'graph' && s.stage !== 'debate' && p.config.capability !== required)
         throw new AppError('VALIDATION_ERROR', `${s.name} 与 Agent 能力不兼容`, 400);
       if (checkArchived && this.profile(p.profileId).archived)
         throw new AppError('FORBIDDEN', `${p.config.name} 已归档，请替换`, 403);
+      for (const participant of s.debate?.participants ?? []) {
+        const agent = this.profileVersion(participant.agentVersionId);
+        if (checkArchived && this.profile(agent.profileId).archived)
+          throw new AppError('FORBIDDEN', `${agent.config.name} 已归档，请替换`, 403);
+      }
     }
     if (
+      c.executionMode !== 'graph' &&
       c.steps.some((step) => step.stage === (c.taskType === 'chapter_write' ? 'generate' : 'draft'))
     )
       throw new AppError('VALIDATION_ERROR', '生成节点与模板用途不匹配', 400);
@@ -251,6 +258,11 @@ export class AgentLibrary {
   private seedCreativeTemplates() {
     this.store.database.transaction(() => {
       for (const [taskType, name, prompt] of [
+        [
+          'chapter_planning',
+          '分章规划与审校',
+          '把授权的卷规划或故事事件拆分成多份连续的单章章纲。chapterCount 有值时严格遵守指定章数；为空时根据原规划的章节安排、目标篇幅与叙事节奏自动决定合理章数（最多 30 章），不要要求作者先手动分章。每章只安排可在一章中充分展开的情节。用场景、人物目标、冲突、转折和结尾钩子建立递进，避免重复消费同一事件。结合已存在的章纲与正文说明承接关系，只补足未覆盖的情节，遵守作者的拆分范围，不把整卷压成一章。修订时保留完整章纲批次，不生成小说正文。',
+        ],
         [
           'basic_information',
           '基础信息构建与审校',
@@ -324,8 +336,91 @@ export class AgentLibrary {
       }
     });
   }
-  private seed() {
-    if (this.db.prepare('SELECT id FROM agent_profiles LIMIT 1').get()) return;
+  private seedDebateTemplate() {
+    if (
+      this.db
+        .prepare(
+          "SELECT id FROM workflow_template_versions WHERE json_extract(config_json,'$.executionMode')='graph' AND json_extract(config_json,'$.name')='多 Agent 辩论' LIMIT 1",
+        )
+        .get()
+    )
+      return;
+    this.store.database.transaction(() => {
+      const definitions = [
+        ['正方 · 提案者', '提出有依据的方案与论点，回应反方质疑；允许在反例成立时修正观点。'],
+        [
+          '反方 · 挑战者',
+          '独立寻找方案的漏洞、反例与替代解释，逐条反驳对方论点。不要为了反对而虚构事实。',
+        ],
+        [
+          '主持 · 汇总者',
+          '综合全部辩论记录，区分共识和分歧，指出更有依据的判断、风险与待作者决定的问题。不要虚构一致意见。',
+        ],
+      ] as const;
+      const agents = definitions.map(([name, prompt]) => {
+        const profile = this.createProfile(
+          agentProfileConfigSchema.parse({
+            name,
+            prompt,
+            capability: 'analysis',
+            contextKinds: documentKindSchema.options,
+          }),
+          true,
+        );
+        return this.publishProfile(profile.id, profile.revision).versions[0] as AgentProfileVersion;
+      });
+      const template = this.createTemplate(
+        workflowTemplateConfigSchema.parse({
+          name: '多 Agent 辩论',
+          taskType: 'discussion',
+          executionMode: 'graph',
+          maxRounds: 3,
+          outputNodeKey: 'summary',
+          autoRevise: false,
+          steps: [
+            {
+              key: 'pro',
+              name: '正方 · 提案者',
+              stage: 'agent',
+              agentVersionId: agents[0]?.id,
+              feedbackFrom: ['con'],
+              instructions: '提出并捍卫你的方案，针对收到的质疑给出回应。',
+              position: { x: 80, y: 60 },
+            },
+            {
+              key: 'con',
+              name: '反方 · 挑战者',
+              stage: 'agent',
+              agentVersionId: agents[1]?.id,
+              feedbackFrom: ['pro'],
+              instructions: '从不同立场挑战提案，指出证据不足、逻辑漏洞与替代方案。',
+              position: { x: 80, y: 320 },
+            },
+            {
+              key: 'summary',
+              name: '主持 · 汇总者',
+              stage: 'agent',
+              agentVersionId: agents[2]?.id,
+              dependsOn: ['pro', 'con'],
+              runWhen: 'after_rounds',
+              instructions: '阅读各轮交锋，汇总主要分歧、可靠结论和仍需作者决策的问题。',
+              position: { x: 480, y: 190 },
+            },
+          ],
+        }),
+      );
+      this.publishTemplate(template.id, template.revision);
+    });
+  }
+  private seedChapterTemplate() {
+    if (
+      this.db
+        .prepare(
+          "SELECT id FROM workflow_template_versions WHERE COALESCE(json_extract(config_json,'$.taskType'),'chapter_write')='chapter_write' LIMIT 1",
+        )
+        .get()
+    )
+      return;
     this.store.database.transaction(() => {
       const definitions = [
         [
@@ -349,7 +444,16 @@ export class AgentLibrary {
           '检查视角、人物动机、节奏、语言与章纲目标，提出具体且可执行的问题和建议。',
         ],
       ] as const;
+      const profiles = this.profiles();
       const versions = definitions.map(([name, capability, prompt]) => {
+        const existing = profiles.find(
+          (profile) =>
+            profile.builtin &&
+            !profile.archived &&
+            profile.versions[0]?.config.name === name &&
+            profile.versions[0]?.config.capability === capability,
+        )?.versions[0];
+        if (existing) return existing;
         const p = this.createProfile(
           agentProfileConfigSchema.parse({ name, capability, prompt }),
           true,

@@ -49,7 +49,7 @@ export function StructureDialog({
 }: {
   structure: Structure;
   scope?: 'chapters' | 'outlines';
-  initialOutlineKind?: 'master_outline' | 'chapter_outline';
+  initialOutlineKind?: 'master_outline' | 'chapter_outline' | 'chapter_plan';
   onSaved(structure: Structure): void;
   onClose(): void;
 }) {
@@ -71,6 +71,9 @@ export function StructureDialog({
     (document) =>
       isStoryEventKind(originals.get(document.id)?.kind ?? '') &&
       !originals.get(document.id)?.archived,
+  );
+  const chapterPlans = documents.filter(
+    (document) => originals.get(document.id)?.kind === 'chapter_plan',
   );
   const changed =
     input.volumes.length !== snapshot.volumes.length ||
@@ -270,6 +273,13 @@ export function StructureDialog({
             >
               故事时间线 <span>{chapterOutlines.length}</span>
             </button>
+            <button
+              type="button"
+              aria-pressed={outlineKind === 'chapter_plan'}
+              onClick={() => setOutlineKind('chapter_plan')}
+            >
+              章纲 <span>{chapterPlans.length}</span>
+            </button>
           </nav>
         ) : (
           <div className="structure-summary">
@@ -294,6 +304,17 @@ export function StructureDialog({
                 {documentRows(masterOutlines, '总纲')}
                 {!masterOutlines.length && (
                   <p className="structure-empty">暂无故事总纲，可在大纲页新建。</p>
+                )}
+              </section>
+            ) : outlineKind === 'chapter_plan' ? (
+              <section className="structure-group">
+                <div className="structure-group-heading">
+                  <h3>单章章纲</h3>
+                  <span>调整章纲标题、所属卷与顺序</span>
+                </div>
+                {documentRows(chapterPlans, '章纲', true)}
+                {!chapterPlans.length && (
+                  <p className="structure-empty">暂无章纲，可先拆分故事规划。</p>
                 )}
               </section>
             ) : (

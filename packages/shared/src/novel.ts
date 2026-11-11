@@ -76,22 +76,32 @@ export const createDocumentSchema = z
     volumeId: idSchema.nullable().default(null),
     newVolumeTitle: titleSchema.optional(),
     chapterId: idSchema.nullable().default(null),
+    parentOutlineId: idSchema.nullable().optional(),
     storyTime: z.string().trim().max(200).optional(),
     summary: z.string().trim().max(1000).optional(),
     content: z.string().max(novelLimits.documentChars).default(''),
     metadata: metadataSchema.default({}),
   })
   .superRefine((value, context) => {
-    if (value.newVolumeTitle && (value.kind !== 'chapter' || value.volumeId !== null))
+    if (
+      value.newVolumeTitle &&
+      (!['chapter', 'chapter_plan'].includes(value.kind) || value.volumeId !== null)
+    )
       context.addIssue({
         code: 'custom',
         path: ['newVolumeTitle'],
-        message: '仅新建正文可同时创建卷，且不能同时指定已有卷',
+        message: '仅正文或章纲可同时创建卷，且不能同时指定已有卷',
       });
-    if (value.kind !== 'chapter_outline' && value.chapterId !== null)
+    if (!['chapter_outline', 'chapter_plan'].includes(value.kind) && value.chapterId !== null)
       context.addIssue({ code: 'custom', path: ['chapterId'], message: '只有章纲可以关联正文' });
-    if (value.kind !== 'chapter' && value.volumeId !== null)
-      context.addIssue({ code: 'custom', path: ['volumeId'], message: '仅正文属于卷' });
+    if (!['chapter', 'chapter_plan'].includes(value.kind) && value.volumeId !== null)
+      context.addIssue({ code: 'custom', path: ['volumeId'], message: '仅正文或章纲属于卷' });
+    if (value.parentOutlineId && value.kind !== 'chapter_plan')
+      context.addIssue({
+        code: 'custom',
+        path: ['parentOutlineId'],
+        message: '仅章纲可设置来源规划',
+      });
   });
 export const novelSaveSchema = z.strictObject({
   baseVersionId: idSchema,
@@ -121,6 +131,10 @@ export const updateStoryEventSchema = z.strictObject({
     .array(idSchema)
     .max(20000)
     .refine((ids) => new Set(ids).size === ids.length, '关联章节不能重复'),
+});
+export const updateChapterPlanSchema = updateStoryEventSchema.extend({
+  parentOutlineId: idSchema.nullable(),
+  volumeId: idSchema.nullable(),
 });
 export const documentDetailSchema = z.strictObject({
   document: documentSchema,
@@ -172,6 +186,7 @@ export type CreateDocument = z.infer<typeof createDocumentSchema>;
 export type NovelSave = z.infer<typeof novelSaveSchema>;
 export type StartOutlineWriting = z.infer<typeof startOutlineWritingSchema>;
 export type UpdateStoryEvent = z.infer<typeof updateStoryEventSchema>;
+export type UpdateChapterPlan = z.infer<typeof updateChapterPlanSchema>;
 export type ImportChapter = z.infer<typeof importChapterSchema>;
 export type ConfirmImport = z.infer<typeof confirmImportSchema>;
 export type ImportPreview = z.infer<typeof importPreviewSchema>;
@@ -193,4 +208,10 @@ export function linkedChapterIds(document: Document): string[] {
 
 export function isStoryEventKind(kind: string): kind is 'chapter_outline' | 'timeline_event' {
   return kind === 'chapter_outline' || kind === 'timeline_event';
+}
+
+export function isWritingPlanKind(
+  kind: string,
+): kind is 'chapter_outline' | 'timeline_event' | 'chapter_plan' {
+  return kind === 'chapter_plan' || isStoryEventKind(kind);
 }

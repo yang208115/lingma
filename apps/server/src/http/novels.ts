@@ -13,6 +13,7 @@ import {
   renameProjectSchema,
   restoreDocumentSchema,
   startOutlineWritingSchema,
+  updateChapterPlanSchema,
   updateStoryEventSchema,
 } from '@lingma/shared';
 import { Hono } from 'hono';
@@ -128,6 +129,14 @@ export function novelRoutes(novels: NovelService, imports: ImportService) {
       data: novels.updateStoryEvent(
         idSchema.parse(context.req.param('id')),
         updateStoryEventSchema.parse(await context.req.json()),
+      ),
+    }),
+  );
+  app.put('/documents/:id/chapter-plan', async (context) =>
+    context.json({
+      data: novels.updateChapterPlan(
+        idSchema.parse(context.req.param('id')),
+        updateChapterPlanSchema.parse(await context.req.json()),
       ),
     }),
   );

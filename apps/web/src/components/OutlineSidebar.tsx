@@ -5,17 +5,8 @@ import {
   orderedChapters,
   type Structure,
 } from '@lingma/shared';
-import {
-  ArrowDown,
-  ArrowUp,
-  BookOpen,
-  Clock3,
-  FileText,
-  ListTree,
-  Plus,
-  Sparkles,
-} from 'lucide-react';
-import { useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronRight, Clock3, FileText, Plus, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 export function OutlineSidebar({
   structure,
@@ -23,240 +14,253 @@ export function OutlineSidebar({
   busy,
   onOpen,
   onCreate,
-  onOpenWriting,
   onReorder,
   onAiCreate,
   onManage,
-  onOpenForeshadows,
 }: {
   structure: Structure;
   documentId: string;
   busy: boolean;
   onOpen(id: string): void;
-  onCreate(kind: 'master_outline' | 'chapter_outline'): void;
-  onOpenWriting(id: string): void;
+  onCreate(kind: 'master_outline' | 'chapter_outline' | 'chapter_plan'): void;
   onReorder(sourceId: string, targetId: string): void;
-  onAiCreate(kind: 'master_outline' | 'chapter_outline'): void;
+  onAiCreate(kind: 'master_outline' | 'chapter_outline' | 'chapter_plan'): void;
   onManage(): void;
-  onOpenForeshadows(): void;
 }) {
+  const selectedKind = structure.documents.find((item) => item.id === documentId)?.kind;
+  const [section, setSection] = useState(
+    selectedKind === 'chapter_plan'
+      ? 'plans'
+      : selectedKind === 'master_outline'
+        ? 'totals'
+        : 'events',
+  );
   const [query, setQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedKind)
+      setSection(
+        selectedKind === 'chapter_plan'
+          ? 'plans'
+          : selectedKind === 'master_outline'
+            ? 'totals'
+            : 'events',
+      );
+  }, [selectedKind]);
   const documents = [...structure.documents].sort(
     (a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id),
   );
-  const totals = documents.filter(
-    (document) => document.kind === 'master_outline' && (showArchived || !document.archived),
-  );
-  const events = documents.filter(
-    (document) => isStoryEventKind(document.kind) && (showArchived || !document.archived),
-  );
+  const available = documents.filter((item) => showArchived || !item.archived);
+  const events = available.filter((item) => isStoryEventKind(item.kind));
+  const plans = available.filter((item) => item.kind === 'chapter_plan');
+  const totals = available.filter((item) => item.kind === 'master_outline');
   const chapters = orderedChapters(structure);
-  const related = (event: Document) => {
-    const ids = new Set(linkedChapterIds(event));
-    return chapters.filter((chapter) => ids.has(chapter.id));
+  const relatedCount = (item: Document) => {
+    const ids = new Set(linkedChapterIds(item));
+    return chapters.filter((chapter) => ids.has(chapter.id)).length;
   };
-  const matches = (document: Document) =>
-    [document.title, document.storyTime, document.summary, ...related(document).map((c) => c.title)]
-      .join('\n')
-      .toLowerCase()
-      .includes(query.trim().toLowerCase());
-  function outlineButton(document: Document) {
-    return (
-      <button
-        type="button"
-        key={document.id}
-        className={`document-link ${document.id === documentId ? 'selected' : ''}`}
-        aria-current={document.id === documentId ? 'page' : undefined}
-        onClick={() => onOpen(document.id)}
-      >
-        <FileText size={14} aria-hidden="true" />
-        <span>
-          {document.title}
-          {document.archived ? '（已归档）' : ''}
-        </span>
-      </button>
-    );
-  }
+  const visible = (section === 'plans' ? plans : section === 'events' ? events : totals).filter(
+    (item) =>
+      [
+        item.title,
+        item.storyTime,
+        item.summary,
+        structure.documents.find((parent) => parent.id === item.parentOutlineId)?.title,
+        structure.volumes.find((volume) => volume.id === item.volumeId)?.title,
+        ...chapters
+          .filter((chapter) => linkedChapterIds(item).includes(chapter.id))
+          .map((chapter) => chapter.title),
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
+  );
+  const kind =
+    section === 'plans'
+      ? 'chapter_plan'
+      : section === 'events'
+        ? 'chapter_outline'
+        : 'master_outline';
   return (
     <aside
       id="workspace-outline-sidebar"
-      className="sidebar outline-sidebar"
+      className="sidebar outline-sidebar outline-reader-index"
       aria-label="故事时间线目录"
     >
-      <div className="outline-sidebar-heading">
-        <ListTree size={20} aria-hidden="true" />
-        <h1>故事大纲</h1>
-      </div>
-      <p className="outline-project-title">{structure.project.title}</p>
-      <p className="outline-progress">
-        {events.length} 个事件 · {events.filter((event) => related(event).length).length}{' '}
-        个已关联章节
-      </p>
-      <label className="sr-only" htmlFor="outline-search">
-        搜索事件、大纲与关联章节
-      </label>
-      <input
-        id="outline-search"
-        type="search"
-        placeholder="搜索事件、时间或章节"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-      />
-      <nav aria-label="总纲与故事时间线">
-        <div className="outline-section-heading">
-          <h2>故事总纲</h2>
-          <button type="button" disabled={busy} onClick={() => onCreate('master_outline')}>
-            <Plus size={13} aria-hidden="true" /> 新建
+      <header className="outline-index-header">
+        <nav className="outline-index-tabs" aria-label="规划分类">
+          <button
+            type="button"
+            aria-pressed={section === 'totals'}
+            onClick={() => setSection('totals')}
+          >
+            故事总纲
           </button>
-        </div>
-        <p className="outline-empty-note">统一规划故事的起点、转折与结局。</p>
-        {totals.filter(matches).map(outlineButton)}
-        {!totals.length && <p className="outline-empty-note">先写下故事走向、转折与结局。</p>}
-        <button
-          type="button"
-          className="outline-ai-create"
-          disabled={busy}
-          onClick={() => onAiCreate('master_outline')}
-        >
-          <Sparkles size={14} aria-hidden="true" /> AI 生成总纲
-        </button>
-        <div className="outline-section-heading">
-          <h2>故事时间线</h2>
-          <button type="button" disabled={busy} onClick={() => onCreate('chapter_outline')}>
-            <Plus size={13} aria-hidden="true" /> 添加事件
+          <button
+            type="button"
+            aria-pressed={section === 'events'}
+            onClick={() => setSection('events')}
+          >
+            故事时间线
           </button>
-        </div>
-        <p className="outline-empty-note">按故事发生顺序排列，可拖动调整。</p>
-        <div className="story-timeline">
-          {events.filter(matches).map((event) => {
-            const linked = related(event);
-            const index = events.indexOf(event);
-            return (
-              <article
-                key={event.id}
-                className={`timeline-event${event.id === documentId ? ' is-selected' : ''}${draggedId === event.id ? ' is-dragging' : ''}`}
-                draggable={!busy && !query.trim() && !showArchived}
-                onDragStart={(drag) => {
-                  drag.dataTransfer.setData('text/plain', event.id);
-                  drag.dataTransfer.effectAllowed = 'move';
-                  setDraggedId(event.id);
-                }}
-                onDragEnd={() => setDraggedId(null)}
-                onDragOver={(drag) => {
-                  if (draggedId && !busy && !query.trim() && !showArchived) drag.preventDefault();
-                }}
-                onDrop={(drag) => {
+          <button
+            type="button"
+            aria-pressed={section === 'plans'}
+            onClick={() => setSection('plans')}
+          >
+            章纲
+          </button>
+        </nav>
+        <label className="sr-only" htmlFor="outline-search">
+          搜索事件、大纲与关联章节
+        </label>
+        <input
+          id="outline-search"
+          type="search"
+          placeholder="搜索规划"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </header>
+      <nav aria-label="总纲与故事时间线" className="outline-index-list">
+        {visible.map((item) => {
+          const group = section === 'plans' ? plans : events;
+          const index = group.indexOf(item);
+          const selected = item.id === documentId;
+          const event = isStoryEventKind(item.kind) || item.kind === 'chapter_plan';
+          return (
+            <article
+              key={item.id}
+              className={`outline-index-item${selected ? ' is-selected' : ''}`}
+              draggable={event && !busy && !query.trim() && !showArchived}
+              onDragStart={(drag) => {
+                drag.dataTransfer.setData('text/plain', item.id);
+                drag.dataTransfer.effectAllowed = 'move';
+                setDraggedId(item.id);
+              }}
+              onDragEnd={() => setDraggedId(null)}
+              onDragOver={(drag) => {
+                if (event && draggedId && !busy && !query.trim() && !showArchived)
                   drag.preventDefault();
-                  if (
-                    draggedId &&
-                    draggedId !== event.id &&
-                    !busy &&
-                    !query.trim() &&
-                    !showArchived
-                  )
-                    onReorder(draggedId, event.id);
-                  setDraggedId(null);
-                }}
+              }}
+              onDrop={(drag) => {
+                drag.preventDefault();
+                if (
+                  event &&
+                  draggedId &&
+                  draggedId !== item.id &&
+                  !busy &&
+                  !query.trim() &&
+                  !showArchived
+                )
+                  onReorder(draggedId, item.id);
+                setDraggedId(null);
+              }}
+            >
+              <button
+                type="button"
+                className="outline-index-open"
+                aria-current={selected ? 'page' : undefined}
+                onClick={() => onOpen(item.id)}
               >
-                <span className="timeline-event-dot" aria-hidden="true" />
-                <div className="timeline-event-time">
-                  <Clock3 size={11} aria-hidden="true" />
-                  {event.storyTime || '时间待定'}
-                </div>
-                {outlineButton(event)}
-                {event.summary && <p className="timeline-event-summary">{event.summary}</p>}
-                <details className="timeline-event-chapters" open={event.id === documentId}>
-                  <summary>
-                    {linked.length ? `${linked.length} 个关联章节` : '尚未关联章节'}
-                  </summary>
-                  {linked.map((chapter) => (
-                    <button
-                      type="button"
-                      key={chapter.id}
-                      onClick={() => onOpenWriting(chapter.id)}
-                    >
-                      <BookOpen size={12} aria-hidden="true" />
-                      <span>{chapter.title}</span>
-                    </button>
-                  ))}
-                  <button type="button" onClick={() => onOpen(event.id)}>
-                    <Plus size={12} aria-hidden="true" /> 管理关联章节
-                  </button>
-                </details>
-                <div className="timeline-event-order">
+                <FileText size={17} aria-hidden="true" />
+                <span className="outline-index-copy">
+                  <strong>
+                    {item.title}
+                    {item.archived ? '（已归档）' : ''}
+                  </strong>
+                  {event && (
+                    <small>
+                      {item.kind === 'chapter_plan'
+                        ? `${relatedCount(item) ? '已关联正文' : '待写正文'} · ${structure.documents.find((parent) => parent.id === item.parentOutlineId)?.title ?? '独立章纲'}`
+                        : `关联正文 ${relatedCount(item)} 章`}
+                    </small>
+                  )}
+                </span>
+                <ChevronRight size={15} aria-hidden="true" />
+              </button>
+              {selected && item.storyTime && (
+                <p className="outline-index-time">
+                  <Clock3 size={14} aria-hidden="true" />
+                  {item.storyTime}
+                </p>
+              )}
+              {selected && event && (
+                <div className="outline-index-order">
                   <button
                     type="button"
+                    aria-label={`上移${item.kind === 'chapter_plan' ? '章纲' : '事件'}：${item.title}`}
                     disabled={busy || index === 0 || Boolean(query.trim()) || showArchived}
-                    aria-label={`上移事件：${event.title}`}
-                    title="上移事件"
                     onClick={() => {
-                      const previous = events[index - 1];
-                      if (previous) onReorder(event.id, previous.id);
+                      const previous = group[index - 1];
+                      if (previous) onReorder(item.id, previous.id);
                     }}
                   >
-                    <ArrowUp size={12} aria-hidden="true" />
+                    <ArrowUp size={13} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
+                    aria-label={`下移${item.kind === 'chapter_plan' ? '章纲' : '事件'}：${item.title}`}
                     disabled={
-                      busy || index === events.length - 1 || Boolean(query.trim()) || showArchived
+                      busy || index === group.length - 1 || Boolean(query.trim()) || showArchived
                     }
-                    aria-label={`下移事件：${event.title}`}
-                    title="下移事件"
                     onClick={() => {
-                      const next = events[index + 1];
-                      if (next) onReorder(event.id, next.id);
+                      const next = group[index + 1];
+                      if (next) onReorder(item.id, next.id);
                     }}
                   >
-                    <ArrowDown size={12} aria-hidden="true" />
+                    <ArrowDown size={13} aria-hidden="true" />
                   </button>
                 </div>
-              </article>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          className="outline-ai-create"
-          disabled={busy}
-          onClick={() => onAiCreate('chapter_outline')}
-        >
-          <Sparkles size={14} aria-hidden="true" /> AI 规划事件
-        </button>
-        {!events.length && (
-          <div className="outline-empty-note">
-            <p>先规划大事件，再用多个章节展开；同一章也可以关联多个事件。</p>
-            <button type="button" disabled={busy} onClick={() => onCreate('chapter_outline')}>
-              <Plus size={13} aria-hidden="true" /> 添加第一个事件
-            </button>
-          </div>
-        )}
-        {query.trim() && !totals.some(matches) && !events.some(matches) && (
-          <p className="outline-empty-note" role="status">
-            没有匹配的大纲或事件。
+              )}
+            </article>
+          );
+        })}
+        {!visible.length && (
+          <p className="outline-empty-note">
+            {query.trim()
+              ? '没有匹配的规划。'
+              : section === 'plans'
+                ? '先把卷规划拆成多章，再逐章展开正文。'
+                : section === 'events'
+                  ? '添加故事事件，规划关键转折与人物的选择。'
+                  : '写下故事的起点、转折与结局。'}
           </p>
         )}
       </nav>
-      <button type="button" className="outline-manage" onClick={onOpenForeshadows}>
-        伏笔与悬念 ·{' '}
-        {
-          documents.filter((document) => document.kind === 'foreshadow' && !document.archived)
-            .length
-        }
-      </button>
-      <label className="outline-archive-toggle">
-        <input
-          type="checkbox"
-          checked={showArchived}
-          onChange={(change) => setShowArchived(change.target.checked)}
-        />
-        显示已归档总纲与事件
-      </label>
-      <button type="button" className="outline-manage" onClick={onManage}>
-        大纲与时间线管理
-      </button>
+      <div className="outline-index-create">
+        <button type="button" disabled={busy} onClick={() => onCreate(kind)}>
+          <Plus size={15} aria-hidden="true" />
+          {section === 'plans'
+            ? '添加章纲'
+            : section === 'events'
+              ? '添加故事事件'
+              : '新建故事总纲'}
+        </button>
+        <button type="button" disabled={busy} onClick={() => onAiCreate(kind)}>
+          <Sparkles size={15} aria-hidden="true" />
+          {section === 'plans'
+            ? 'AI 拆分章纲'
+            : section === 'events'
+              ? 'AI 规划事件'
+              : 'AI 生成总纲'}
+        </button>
+      </div>
+      <details className="outline-index-tools">
+        <summary>大纲管理</summary>
+        <button type="button" onClick={onManage}>
+          大纲与时间线管理
+        </button>
+        <label className="outline-archive-toggle">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(change) => setShowArchived(change.target.checked)}
+          />
+          显示已归档总纲与事件
+        </label>
+      </details>
     </aside>
   );
 }

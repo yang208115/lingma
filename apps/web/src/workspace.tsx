@@ -1,9 +1,12 @@
 import {
   type CreateDocument,
+  type Document,
   elementDataSchema,
   elementLabels,
   isBasicInformationKind,
   isStoryEventKind,
+  isWritingPlanKind,
+  linkedChapterIds,
   orderedChapters,
   type Project,
   type Proposal,
@@ -33,12 +36,19 @@ import {
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api } from './api.js';
 import { AssistantResizeHandle } from './components/AssistantResizeHandle.js';
+import {
+  ChapterPlanDetails,
+  ChapterPlanList,
+  ChapterPlanningDialog,
+  type PlanningInsertion,
+} from './components/ChapterPlans.js';
 import { DiffView } from './components/DiffView.js';
 import { ElementPanel } from './components/ElementPanel.js';
 import { History } from './components/History.js';
 import { ImportDialog } from './components/ImportDialog.js';
 import { MarkdownOutlineEditor } from './components/MarkdownOutlineEditor.js';
 import { Modal } from './components/Modal.js';
+import { OutlinePlanView, OutlineReaderToolbar } from './components/OutlinePlanView.js';
 import { OutlineResizeHandle } from './components/OutlineResizeHandle.js';
 import { OutlineSidebar } from './components/OutlineSidebar.js';
 import { PlanningFields } from './components/PlanningFields.js';
@@ -60,6 +70,7 @@ const kindNames = {
   chapter: '正文',
   master_outline: '总纲',
   chapter_outline: '故事事件',
+  chapter_plan: '章纲',
   character: '人物',
 };
 const statusNames = {
@@ -113,6 +124,10 @@ export function Workspace() {
   }, [assistantWidth]);
   const navigate = useNavigate();
   const location = useLocation();
+  const sourcePlanId = new URLSearchParams(location.search).get('sourcePlan') ?? '';
+  const [outlineEditingId, setOutlineEditingId] = useState('');
+  const [outlineAssistantOpen, setOutlineAssistantOpen] = useState(false);
+  const outlineAssistant = useRef<HTMLElement>(null);
   const {
     projectId,
     documentId,
@@ -120,6 +135,14 @@ export function Workspace() {
     setView: setWorkspaceView,
     setDocumentId,
   } = useWorkspaceRoute();
+  useEffect(() => {
+    if (
+      outlineAssistantOpen &&
+      workspaceView === 'outline' &&
+      window.matchMedia('(max-width: 900px)').matches
+    )
+      outlineAssistant.current?.scrollIntoView({ block: 'start' });
+  }, [outlineAssistantOpen, workspaceView]);
   useEffect(() => {
     if (projectId) {
       try {
@@ -148,6 +171,7 @@ export function Workspace() {
     | 'rename-project'
     | 'delete-project'
     | 'create-document'
+    | 'chapter-planning'
     | 'structure'
     | 'import'
     | 'history'
@@ -161,6 +185,7 @@ export function Workspace() {
   const [newVolume, setNewVolume] = useState('');
   const [newVolumeTitle, setNewVolumeTitle] = useState('');
   const [newChapter, setNewChapter] = useState('');
+  const [newParentOutline, setNewParentOutline] = useState('');
   const [newStoryTime, setNewStoryTime] = useState('');
   const [newSummary, setNewSummary] = useState('');
   const activeProject = useRef(projectId);
@@ -168,6 +193,12 @@ export function Workspace() {
   const selected = structure?.documents.find((item) => item.id === documentId);
   const draft = store.get(documentId);
   const currentStructure = structure?.project.id === projectId ? structure : null;
+  const draftFrom =
+    workspaceView === 'writing' && !documentId
+      ? currentStructure?.documents.find(
+          (item) => item.id === sourcePlanId && !item.archived && isWritingPlanKind(item.kind),
+        )
+      : undefined;
   const outlineVolumeOptions = [
     ...new Map(
       (currentStructure?.documents ?? [])
@@ -209,12 +240,16 @@ export function Workspace() {
       });
     } else if (needsSetup && workspaceView !== 'information') {
       setWorkspaceView('information', true);
-    } else if (!documentId && workspaceView !== 'information') {
+    } else if (
+      !documentId &&
+      workspaceView !== 'information' &&
+      !(workspaceView === 'writing' && sourcePlanId)
+    ) {
       const target =
         workspaceView === 'outline'
           ? currentStructure.documents.find(
               (item) =>
-                !item.archived && (item.kind === 'master_outline' || isStoryEventKind(item.kind)),
+                !item.archived && (item.kind === 'master_outline' || isWritingPlanKind(item.kind)),
             )
           : orderedChapters(currentStructure)[0];
       if (target) setDocumentId(target.id, true);
@@ -226,16 +261,15 @@ export function Workspace() {
     workspaceView,
     projectId,
     documentId,
+    sourcePlanId,
     navigate,
     setWorkspaceView,
     setDocumentId,
   ]);
   const [selection, setSelection] = useState({ from: 0, to: 0 });
-  const [composerInsertion, setComposerInsertion] = useState<{
-    id: string;
-    projectId: string;
-    text: string;
-  } | null>(null);
+  const [composerInsertion, setComposerInsertion] = useState<
+    (PlanningInsertion & { projectId: string }) | null
+  >(null);
   const clearComposerInsertion = useCallback((id: string) => {
     setComposerInsertion((previous) => (previous?.id === id ? null : previous));
   }, []);
@@ -318,7 +352,7 @@ export function Workspace() {
     if (
       workspaceView !== 'information' &&
       (selected?.kind === 'master_outline' ||
-        isStoryEventKind(selected?.kind ?? '') ||
+        isWritingPlanKind(selected?.kind ?? '') ||
         selected?.kind === 'foreshadow')
     )
       setWorkspaceView('outline');
@@ -455,10 +489,13 @@ export function Workspace() {
   }
   function chooseDocument(id: string, keepReview = false) {
     if (!keepReview) setWritingReview(null);
+    setShowPlan(false);
+    setBlankTab((value) => (value === 'active' ? 'open' : value));
+    setOutlineEditingId('');
     setDocumentId(id);
     setError('');
     const target = currentStructure?.documents.find((document) => document.id === id);
-    if (target?.kind === 'master_outline' || (target && isStoryEventKind(target.kind))) {
+    if (target?.kind === 'master_outline' || (target && isWritingPlanKind(target.kind))) {
       setOutlineSection('events');
       setWorkspaceView('outline');
     } else if (target?.kind === 'foreshadow') {
@@ -477,9 +514,19 @@ export function Workspace() {
     chooseDocument(chapterId ?? orderedChapters(currentStructure)[0]?.id ?? '');
     setWorkspaceView('writing');
   }
-  function createOutline(kind: 'master_outline' | 'chapter_outline', chapterId = '') {
+  function createOutline(
+    kind: 'master_outline' | 'chapter_outline' | 'chapter_plan',
+    chapterId = '',
+  ) {
     if (!currentStructure) return;
     setNewKind(kind);
+    setNewParentOutline(
+      kind === 'chapter_plan' &&
+        selected &&
+        (isStoryEventKind(selected.kind) || selected.kind === 'master_outline')
+        ? selected.id
+        : '',
+    );
     setNewChapter(kind === 'chapter_outline' ? chapterId : '');
     setNewVolume('');
     setNewVolumeTitle('');
@@ -489,8 +536,41 @@ export function Workspace() {
     const outlineCount = currentStructure.documents.filter((document) =>
       isStoryEventKind(document.kind),
     ).length;
-    setNewTitle(kind === 'master_outline' ? '故事总纲' : (title ?? `故事事件 ${outlineCount + 1}`));
+    setNewTitle(
+      kind === 'master_outline'
+        ? '故事总纲'
+        : kind === 'chapter_plan'
+          ? `第${currentStructure.documents.filter((item) => item.kind === 'chapter_plan').length + 1}章 章纲`
+          : (title ?? `故事事件 ${outlineCount + 1}`),
+    );
     setDialog('create-document');
+  }
+  function prepareOutlineTask(kind: 'master_outline' | 'chapter_outline' | 'chapter_plan') {
+    if (kind === 'chapter_plan') {
+      setDialog('chapter-planning');
+      return;
+    }
+    setOutlineAssistantOpen(true);
+    setComposerInsertion({
+      id: crypto.randomUUID(),
+      projectId,
+      text:
+        kind === 'master_outline'
+          ? '请根据作品基本信息与已有故事规划，生成一份完整的故事总纲，涵盖故事起点、主线推进、人物弧线、主要转折、高潮与结局，提交为待确认的故事总纲候选。'
+          : '请根据基本信息和故事总纲规划故事时间线，按事件实际发生的顺序拆分大事件，为每个事件提供名称、故事时间、概述和完整大纲。一个事件可以跨多个章节，不要按一章一个事件来拆分。',
+    });
+  }
+  async function prepareProseFromPlan(id = selected?.id) {
+    const source = currentStructure?.documents.find((item) => item.id === id);
+    if (!source || !isWritingPlanKind(source.kind)) return;
+    if (source.kind === 'chapter_plan' && linkedChapterIds(source)[0]) {
+      openWriting(linkedChapterIds(source)[0]);
+      return;
+    }
+    await saveBeforeOperation();
+    await navigate(
+      `/projects/${projectId}/writing?${new URLSearchParams({ sourcePlan: source.id })}`,
+    );
   }
   async function startOutlineWriting(outlineId: string, newChapterTitle?: string) {
     const targetProject = projectId;
@@ -516,9 +596,12 @@ export function Workspace() {
     const documents = [...currentStructure.documents].sort(
       (a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id),
     );
-    const events = documents.filter(
-      (document) => isStoryEventKind(document.kind) && !document.archived,
-    );
+    const planningChapters =
+      documents.find((item) => item.id === sourceId)?.kind === 'chapter_plan';
+    const inGroup = (document: Document) =>
+      !document.archived &&
+      (planningChapters ? document.kind === 'chapter_plan' : isStoryEventKind(document.kind));
+    const events = documents.filter(inGroup);
     const source = events.findIndex((event) => event.id === sourceId);
     const target = events.findIndex((event) => event.id === targetId);
     if (source < 0 || target < 0 || source === target) return;
@@ -527,9 +610,7 @@ export function Workspace() {
     events.splice(target, 0, moved);
     let next = 0;
     const reordered = documents.map((document, sortOrder) => ({
-      ...(isStoryEventKind(document.kind) && !document.archived
-        ? (events[next++] ?? document)
-        : document),
+      ...(inGroup(document) ? (events[next++] ?? document) : document),
       sortOrder,
     }));
     await api.putStructure(projectId, {
@@ -705,7 +786,7 @@ export function Workspace() {
                   const target = currentStructure.documents.find(
                     (document) =>
                       !document.archived &&
-                      (document.kind === 'master_outline' || isStoryEventKind(document.kind)),
+                      (document.kind === 'master_outline' || isWritingPlanKind(document.kind)),
                   );
                   setDocumentId(target?.id ?? '');
                   setOutlineSection('events');
@@ -741,7 +822,7 @@ export function Workspace() {
           )}
           {!showingElements && !showingForeshadows && (
             <div
-              className={`workbench ${showingOutline ? 'outline-workbench' : 'writing-workbench'}`}
+              className={`workbench ${showingOutline ? `outline-workbench outline-reader-layout${outlineAssistantOpen ? ' has-outline-assistant' : ''}` : 'writing-workbench'}`}
               style={
                 {
                   ...(showingElements ? { display: 'none' } : {}),
@@ -761,19 +842,8 @@ export function Workspace() {
                   busy={busy}
                   onOpen={chooseDocument}
                   onCreate={createOutline}
-                  onOpenWriting={openWriting}
                   onReorder={(source, target) => void run(() => reorderEvents(source, target))}
-                  onAiCreate={(kind) =>
-                    setComposerInsertion({
-                      id: crypto.randomUUID(),
-                      projectId,
-                      text:
-                        kind === 'master_outline'
-                          ? '请根据作品基本信息与已有故事规划，生成一份完整的故事总纲，涵盖故事起点、主线推进、人物弧线、主要转折、高潮与结局，提交为待确认的故事总纲候选。'
-                          : '请根据基本信息和故事总纲规划故事时间线，按事件实际发生的顺序拆分大事件，为每个事件提供名称、故事时间（可选）、概述和完整大纲，安排目标、冲突、转折与悬念。一个事件可以跨多个章节，不要按一章一个事件来拆分。',
-                    })
-                  }
-                  onOpenForeshadows={() => setOutlineSection('foreshadow')}
+                  onAiCreate={prepareOutlineTask}
                   onManage={() => setDialog('structure')}
                 />
               )}
@@ -782,134 +852,241 @@ export function Workspace() {
                 className="writing-area"
                 aria-label={showingOutline ? '大纲编辑区' : '正文编辑区'}
               >
+                {showingOutline && (
+                  <OutlineReaderToolbar
+                    projectTitle={currentStructure.project.title}
+                    label={
+                      showPlan && planPreview
+                        ? `${planPreview.label} · 生成稿`
+                        : selected?.kind === 'chapter_plan'
+                          ? '章纲'
+                          : selected && isStoryEventKind(selected.kind)
+                            ? '规划'
+                            : '总纲'
+                    }
+                    assistantOpen={outlineAssistantOpen}
+                    onAssistant={() => setOutlineAssistantOpen((open) => !open)}
+                  />
+                )}
                 <div
                   className={
                     blankTab === 'active' || (showPlan && planPreview) ? 'is-plan-view' : undefined
                   }
                 >
-                  {selected && draft ? (
+                  {showingOutline &&
+                  selected &&
+                  draft &&
+                  !activeReview &&
+                  !showPlan &&
+                  outlineEditingId !== documentId ? (
+                    <OutlinePlanView
+                      document={selected}
+                      structure={currentStructure}
+                      content={draft.content}
+                      metadataText={draft.metadataText}
+                      busy={busy}
+                      onEdit={() => setOutlineEditingId(documentId)}
+                      onDraft={() =>
+                        isWritingPlanKind(selected.kind)
+                          ? void run(() => prepareProseFromPlan())
+                          : prepareOutlineTask('chapter_outline')
+                      }
+                      onPlan={() => setDialog('chapter-planning')}
+                      onHistory={() => setDialog('history')}
+                    >
+                      {draft.error && (
+                        <p className="error" role="alert">
+                          {draft.error}
+                          <button type="button" onClick={() => setOutlineEditingId(documentId)}>
+                            处理保存问题
+                          </button>
+                        </p>
+                      )}
+                      {draft.recoveryWarning && (
+                        <p className="warning" role="alert">
+                          {draft.recoveryWarning}
+                        </p>
+                      )}
+                      {(isStoryEventKind(selected.kind) || selected.kind === 'master_outline') && (
+                        <ChapterPlanList
+                          source={selected}
+                          structure={currentStructure}
+                          busy={busy}
+                          onOpen={chooseDocument}
+                          onDraft={(id) => {
+                            const item = currentStructure.documents.find(
+                              (entry) => entry.id === id,
+                            );
+                            if (item?.kind === 'chapter') openWriting(id);
+                            else void run(() => prepareProseFromPlan(id));
+                          }}
+                          onCreate={() => createOutline('chapter_plan')}
+                          onGenerate={() => setDialog('chapter-planning')}
+                        />
+                      )}
+                      {selected.kind === 'chapter_plan' && (
+                        <ChapterPlanDetails
+                          key={`${selected.id}:${currentStructure.project.structureVersion}`}
+                          plan={selected}
+                          structure={currentStructure}
+                          busy={busy}
+                          onOpen={(id) => {
+                            if (
+                              currentStructure.documents.find((item) => item.id === id)?.kind ===
+                              'chapter'
+                            )
+                              openWriting(id);
+                            else chooseDocument(id);
+                          }}
+                          onSave={async (input) => {
+                            await saveBeforeOperation();
+                            store.replace(await api.updateChapterPlan(selected.id, input));
+                            await refreshStructure(projectId);
+                          }}
+                        />
+                      )}
+                      {isStoryEventKind(selected.kind) && (
+                        <StoryEventDetails
+                          key={selected.id}
+                          event={selected}
+                          structure={currentStructure}
+                          busy={busy}
+                          chaptersOnly
+                          onOpenChapter={openWriting}
+                          onAddChapter={(title) => startOutlineWriting(selected.id, title)}
+                          onSave={async (input) => {
+                            await saveBeforeOperation();
+                            store.replace(await api.updateStoryEvent(selected.id, input));
+                            await refreshStructure(projectId);
+                          }}
+                        />
+                      )}
+                    </OutlinePlanView>
+                  ) : selected && draft ? (
                     <>
-                      <div className="editor-tabs" role="tablist" aria-label="已打开文档">
-                        {tabDocuments.map((item) => (
-                          <span
-                            key={item.id}
-                            className={`editor-tab${item.id === documentId && !activeReview && !showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
-                          >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-selected={
-                                item.id === documentId &&
-                                !activeReview &&
-                                !showPlan &&
-                                blankTab !== 'active'
-                              }
-                              title={item.title}
-                              onClick={() => selectTab(item.id)}
+                      {!showingOutline && (
+                        <div className="editor-tabs" role="tablist" aria-label="已打开文档">
+                          {tabDocuments.map((item) => (
+                            <span
+                              key={item.id}
+                              className={`editor-tab${item.id === documentId && !activeReview && !showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
                             >
-                              {item.title}
-                            </button>
-                            {tabDocuments.length > 1 && (
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={
+                                  item.id === documentId &&
+                                  !activeReview &&
+                                  !showPlan &&
+                                  blankTab !== 'active'
+                                }
+                                title={item.title}
+                                onClick={() => selectTab(item.id)}
+                              >
+                                {item.title}
+                              </button>
+                              {tabDocuments.length > 1 && (
+                                <button
+                                  type="button"
+                                  className="editor-tab-close"
+                                  aria-label={`关闭 ${item.title}`}
+                                  onClick={() => closeTab(item.id)}
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </span>
+                          ))}
+                          {planPreview && (
+                            <span
+                              className={`editor-tab is-ai${showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
+                            >
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={showPlan}
+                                title={`${planPreview.label}：${planPreview.title}`}
+                                onClick={() => {
+                                  setBlankTab((value) => (value === 'active' ? 'open' : value));
+                                  setShowPlan(true);
+                                }}
+                              >
+                                {planPreview.label}
+                              </button>
                               <button
                                 type="button"
                                 className="editor-tab-close"
-                                aria-label={`关闭 ${item.title}`}
-                                onClick={() => closeTab(item.id)}
+                                aria-label={`关闭${planPreview.label}`}
+                                onClick={() => {
+                                  setPlanPreview(null);
+                                  setShowPlan(false);
+                                }}
                               >
                                 ×
                               </button>
-                            )}
-                          </span>
-                        ))}
-                        {planPreview && (
-                          <span
-                            className={`editor-tab is-ai${showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
+                            </span>
+                          )}
+                          {writingReview && (
+                            <span
+                              className={`editor-tab is-ai${activeReview && !showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
+                            >
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={Boolean(activeReview)}
+                                title={`AI 输出预览：${reviewTarget?.title ?? ''}`}
+                                onClick={() => {
+                                  setShowPlan(false);
+                                  setShowReview(true);
+                                  setReviewReveal((value) => value + 1);
+                                  chooseDocument(writingReview.targetDocumentId, true);
+                                }}
+                              >
+                                AI 输出预览
+                              </button>
+                              <button
+                                type="button"
+                                className="editor-tab-close"
+                                aria-label="关闭 AI 输出预览"
+                                onClick={() => setWritingReview(null)}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          )}
+                          {blankTab !== 'closed' && (
+                            <span
+                              className={`editor-tab${blankTab === 'active' ? ' is-active' : ''}`}
+                            >
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={blankTab === 'active'}
+                                onClick={() => setBlankTab('active')}
+                              >
+                                新标签页
+                              </button>
+                              <button
+                                type="button"
+                                className="editor-tab-close"
+                                aria-label="关闭新标签页"
+                                onClick={() => setBlankTab('closed')}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="editor-tab-add"
+                            aria-label="打开新标签页"
+                            title="打开新标签页"
+                            onClick={() => setBlankTab('active')}
                           >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-selected={showPlan}
-                              title={`${planPreview.label}：${planPreview.title}`}
-                              onClick={() => {
-                                setBlankTab((value) => (value === 'active' ? 'open' : value));
-                                setShowPlan(true);
-                              }}
-                            >
-                              {planPreview.label}
-                            </button>
-                            <button
-                              type="button"
-                              className="editor-tab-close"
-                              aria-label={`关闭${planPreview.label}`}
-                              onClick={() => {
-                                setPlanPreview(null);
-                                setShowPlan(false);
-                              }}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        )}
-                        {writingReview && (
-                          <span
-                            className={`editor-tab is-ai${activeReview && !showPlan && blankTab !== 'active' ? ' is-active' : ''}`}
-                          >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-selected={Boolean(activeReview)}
-                              title={`AI 输出预览：${reviewTarget?.title ?? ''}`}
-                              onClick={() => {
-                                setShowPlan(false);
-                                setShowReview(true);
-                                setReviewReveal((value) => value + 1);
-                                chooseDocument(writingReview.targetDocumentId, true);
-                              }}
-                            >
-                              AI 输出预览
-                            </button>
-                            <button
-                              type="button"
-                              className="editor-tab-close"
-                              aria-label="关闭 AI 输出预览"
-                              onClick={() => setWritingReview(null)}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        )}
-                        {blankTab !== 'closed' && (
-                          <span
-                            className={`editor-tab${blankTab === 'active' ? ' is-active' : ''}`}
-                          >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-selected={blankTab === 'active'}
-                              onClick={() => setBlankTab('active')}
-                            >
-                              新标签页
-                            </button>
-                            <button
-                              type="button"
-                              className="editor-tab-close"
-                              aria-label="关闭新标签页"
-                              onClick={() => setBlankTab('closed')}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          className="editor-tab-add"
-                          aria-label="打开新标签页"
-                          title="打开新标签页"
-                          onClick={() => setBlankTab('active')}
-                        >
-                          +
-                        </button>
-                      </div>
+                            +
+                          </button>
+                        </div>
+                      )}
                       {blankTab === 'active' && currentStructure && (
                         <section className="editor-start-page" aria-label="新标签页">
                           <h2>{currentStructure.project.title}</h2>
@@ -956,7 +1133,7 @@ export function Workspace() {
                                 (item) =>
                                   !item.archived &&
                                   !item.deletedAt &&
-                                  (item.kind === 'master_outline' || isStoryEventKind(item.kind)),
+                                  (item.kind === 'master_outline' || isWritingPlanKind(item.kind)),
                               ),
                             },
                           ].map((group) => (
@@ -984,6 +1161,18 @@ export function Workspace() {
                         </section>
                       )}
                       <div className={`editor-toolbar${activeReview ? ' is-review' : ''}`}>
+                        {showingOutline && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOutlineEditingId('');
+                              setShowPlan(false);
+                              setWritingReview(null);
+                            }}
+                          >
+                            返回规划预览
+                          </button>
+                        )}
                         <span className="editor-context">
                           <FileText size={14} aria-hidden="true" />
                           {kindNames[selected.kind]}
@@ -1324,7 +1513,8 @@ export function Workspace() {
                               value={draft.content}
                               onChange={(content) => store.edit(documentId, { content })}
                               onSelectionChange={setSelection}
-                              onSendToAi={(text) =>
+                              onSendToAi={(text) => {
+                                if (showingOutline) setOutlineAssistantOpen(true);
                                 setComposerInsertion({
                                   id: crypto.randomUUID(),
                                   projectId,
@@ -1332,8 +1522,8 @@ export function Workspace() {
                                     .split('\n')
                                     .map((line) => `> ${line}`)
                                     .join('\n')}\n\n`,
-                                })
-                              }
+                                });
+                              }}
                             />
                             <details className="metadata">
                               <summary>
@@ -1415,6 +1605,56 @@ export function Workspace() {
                         </footer>
                       </div>
                     </>
+                  ) : showPlan && planPreview ? (
+                    <>
+                      <div className="editor-tabs" role="tablist" aria-label="已打开文档">
+                        <span className="editor-tab is-ai is-active">
+                          <button type="button" role="tab" aria-selected="true">
+                            {planPreview.label}
+                          </button>
+                          <button
+                            type="button"
+                            className="editor-tab-close"
+                            aria-label={`关闭${planPreview.label}`}
+                            onClick={() => {
+                              setPlanPreview(null);
+                              setShowPlan(false);
+                            }}
+                          >
+                            <X size={12} aria-hidden="true" />
+                          </button>
+                        </span>
+                      </div>
+                      <section className="editor-plan-preview" aria-label={planPreview.label}>
+                        <WorkflowContent text={planPreview.content} />
+                      </section>
+                    </>
+                  ) : draftFrom ? (
+                    <section className="outline-draft-landing" aria-label="按规划起草正文">
+                      <p className="eyebrow">正文写作 · 新章节草稿</p>
+                      <h1>从这份规划，写出下一章。</h1>
+                      <p className="muted">来源规划</p>
+                      <h2>{draftFrom.title}</h2>
+                      {draftFrom.summary && <p>{draftFrom.summary}</p>}
+                      <p>
+                        在右侧选择模型、补充写作要求，然后发送任务。生成内容会先作为候选展示，确认采用后才创建正文章节并关联当前规划。
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigate(
+                            `/projects/${projectId}/outline?${new URLSearchParams({ document: draftFrom.id })}`,
+                          )
+                        }
+                      >
+                        返回来源规划
+                      </button>
+                    </section>
+                  ) : sourcePlanId && workspaceView === 'writing' ? (
+                    <div className="empty">
+                      <p role="alert">来源规划不存在或已归档，请返回大纲重新选择。</p>
+                      <Link to={`/projects/${projectId}/outline`}>返回故事大纲</Link>
+                    </div>
                   ) : (
                     <div className="empty">
                       <p className="eyebrow">{documentId ? '正在读取文档' : '给故事一个落点'}</p>
@@ -1461,11 +1701,34 @@ export function Workspace() {
                   )}
                 </div>
               </main>
-              <aside id="workspace-ai-assistant" className="context-aside" aria-label="AI 聊天侧栏">
-                <AssistantResizeHandle onResize={setAssistantWidth} />
+              <aside
+                ref={outlineAssistant}
+                id="workspace-ai-assistant"
+                className="context-aside"
+                aria-label="AI 聊天侧栏"
+                hidden={showingOutline && !outlineAssistantOpen}
+              >
+                {showingOutline ? (
+                  <div className="outline-assistant-heading">
+                    <span>大纲助手</span>
+                    <button
+                      type="button"
+                      aria-label="收起大纲助手"
+                      onClick={() => {
+                        setOutlineAssistantOpen(false);
+                        document.getElementById('outline-assistant-toggle')?.focus();
+                      }}
+                    >
+                      <X size={17} aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : (
+                  <AssistantResizeHandle onResize={setAssistantWidth} />
+                )}
                 <WritingPanel
-                  key={projectId}
+                  key={`${projectId}:${draftFrom?.id ?? ''}`}
                   projectId={projectId}
+                  draftFrom={draftFrom}
                   shortForm={!longForm}
                   outlineMode={showingOutline}
                   document={selected}
@@ -1488,6 +1751,7 @@ export function Workspace() {
                   onReviewProposal={openWritingReview}
                   onPreviewPlan={(preview) => {
                     setPlanPreview(preview);
+                    setBlankTab((value) => (value === 'active' ? 'open' : value));
                     setShowPlan(true);
                   }}
                   onOutlinesCreated={async (id, outlineId) => {
@@ -1677,6 +1941,31 @@ export function Workspace() {
           </form>
         </Modal>
       )}
+      {dialog === 'chapter-planning' && currentStructure && (
+        <ChapterPlanningDialog
+          structure={currentStructure}
+          source={
+            selected && (isStoryEventKind(selected.kind) || selected.kind === 'master_outline')
+              ? selected
+              : undefined
+          }
+          onClose={() => setDialog(null)}
+          onStart={async (planning) => {
+            await saveBeforeOperation();
+            const source = currentStructure.documents.find(
+              (item) => item.id === planning.sourceOutlineId,
+            );
+            setOutlineAssistantOpen(true);
+            setComposerInsertion({
+              id: crypto.randomUUID(),
+              projectId,
+              planning,
+              autoStart: true,
+              text: `请${source ? `根据《${source.title}》` : '根据授权故事规划'}${planning.chapterCount ? `拆分为 ${planning.chapterCount} 份单章章纲` : '自动拆分为合理数量的单章章纲（最多 30 章），优先沿用原规划已明确的章节安排，未明确时根据情节密度与叙事节奏决定章数'}。逐章写清目标、视角、场景、冲突与转折、结尾钩子和情节边界，保持连贯递进。参考已有章纲避免重复拆分，只补足尚未覆盖的情节。只生成章纲，不写正文。先提交完整批次供我确认。`,
+            });
+          }}
+        />
+      )}
       {dialog === 'create-document' && currentStructure && (
         <Modal
           labelledBy="new-document-title"
@@ -1693,9 +1982,17 @@ export function Workspace() {
                   baseStructureVersion: currentStructure.project.structureVersion,
                   kind: newKind,
                   title: newTitle,
-                  volumeId: newKind === 'chapter' && !creatingVolume ? newVolume || null : null,
-                  ...(newKind === 'chapter' && creatingVolume ? { newVolumeTitle } : {}),
+                  volumeId:
+                    ['chapter', 'chapter_plan'].includes(newKind) && !creatingVolume
+                      ? newVolume || null
+                      : null,
+                  ...(['chapter', 'chapter_plan'].includes(newKind) && creatingVolume
+                    ? { newVolumeTitle }
+                    : {}),
                   chapterId: newKind === 'chapter_outline' ? newChapter || null : null,
+                  ...(newKind === 'chapter_plan'
+                    ? { parentOutlineId: newParentOutline || null }
+                    : {}),
                   content: '',
                   ...(newKind === 'chapter_outline'
                     ? { storyTime: newStoryTime, summary: newSummary }
@@ -1708,8 +2005,9 @@ export function Workspace() {
                 store.open(created);
                 await refreshStructure(projectId);
                 chooseDocument(created.document.id);
+                if (newKind === 'chapter_plan') setOutlineEditingId(created.document.id);
                 setWorkspaceView(
-                  newKind === 'master_outline' || newKind === 'chapter_outline'
+                  ['master_outline', 'chapter_outline', 'chapter_plan'].includes(newKind)
                     ? 'outline'
                     : 'writing',
                 );
@@ -1733,7 +2031,7 @@ export function Workspace() {
                 {Object.entries(kindNames)
                   .filter(([kind]) =>
                     showingOutline
-                      ? kind === 'master_outline' || kind === 'chapter_outline'
+                      ? ['master_outline', 'chapter_outline', 'chapter_plan'].includes(kind)
                       : longForm || kind === 'chapter',
                   )
                   .map(([value, label]) => (
@@ -1752,7 +2050,7 @@ export function Workspace() {
                 onChange={(event) => setNewTitle(event.target.value)}
               />
             </label>
-            {newKind === 'chapter' && (
+            {['chapter', 'chapter_plan'].includes(newKind) && (
               <>
                 <label>
                   所属卷
@@ -1800,6 +2098,28 @@ export function Workspace() {
                   </label>
                 )}
               </>
+            )}
+            {newKind === 'chapter_plan' && (
+              <label>
+                来源规划
+                <select
+                  value={newParentOutline}
+                  onChange={(event) => setNewParentOutline(event.target.value)}
+                >
+                  <option value="">独立章纲</option>
+                  {currentStructure.documents
+                    .filter(
+                      (item) =>
+                        !item.archived &&
+                        (isStoryEventKind(item.kind) || item.kind === 'master_outline'),
+                    )
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.title}
+                      </option>
+                    ))}
+                </select>
+              </label>
             )}
             {newKind === 'chapter_outline' && (
               <>
@@ -1863,7 +2183,11 @@ export function Workspace() {
           structure={currentStructure}
           scope={showingOutline ? 'outlines' : 'chapters'}
           initialOutlineKind={
-            selected && isStoryEventKind(selected.kind) ? 'chapter_outline' : 'master_outline'
+            selected?.kind === 'chapter_plan'
+              ? 'chapter_plan'
+              : selected && isStoryEventKind(selected.kind)
+                ? 'chapter_outline'
+                : 'master_outline'
           }
           onSaved={setStructure}
           onClose={() => setDialog(null)}

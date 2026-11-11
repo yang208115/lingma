@@ -17,6 +17,7 @@ import {
   jsonSchema,
   type LoopCheckpoint,
   parseReviewMarkdown,
+  piConnectionSchema,
   type ReviewIssue,
   renderIssuesMarkdown,
   type WorkflowArtifact,
@@ -26,6 +27,7 @@ import {
   type WorkflowNode,
   type WorkflowPreview,
   type WorkflowRun,
+  workflowContextPreviewSchema,
   workflowInputSchema,
   workflowPreviewSchema,
   workflowRunSchema,
@@ -55,6 +57,8 @@ const held = [
   'failed',
   'limited',
 ];
+const hasDebateNodes = (w: WorkflowRun) =>
+  w.snapshot.template.config.steps.some((step) => step.stage === 'debate');
 export class WorkflowService {
   readonly library: AgentLibrary;
   private stopped = false;
@@ -205,11 +209,29 @@ export class WorkflowService {
       if (!session || session.project_id !== input.projectId || session.deleted_at)
         throw new AppError('FORBIDDEN', '会话不属于当前作品或已删除', 403);
     }
-    const profiles = [...new Set(template.config.steps.map((s) => s.agentVersionId))].map((id) =>
-      this.library.profileVersion(id),
-    );
-    const contexts: Record<string, ContextPreview> = {};
-    for (const p of profiles) contexts[p.id] = await prepareProfileContext(this, input, p);
+    const profiles = [
+      ...new Set(
+        template.config.steps.flatMap((s) => [
+          s.agentVersionId,
+          ...(s.debate?.participants.map((p) => p.agentVersionId) ?? []),
+        ]),
+      ),
+    ].map((id) => this.library.profileVersion(id));
+    const contexts: WorkflowPreview['contexts'] = {};
+    for (const p of profiles) {
+      const context = workflowContextPreviewSchema.parse(
+        await prepareProfileContext(
+          this,
+          input,
+          p,
+          template.config.executionMode === 'graph' ||
+            template.config.steps.some((step) => step.stage === 'debate'),
+        ),
+      );
+      context.estimatedInputTokens = estimateTokens(context.request);
+      context.hash = digest(stable({ ...context, hash: undefined }));
+      contexts[p.id] = context;
+    }
     const preview = {
       input,
       template,
@@ -520,7 +542,13 @@ export class WorkflowService {
   }
   private publishNode(w: WorkflowRun, node: WorkflowNode, markdown: string, runId: string) {
     const task = w.snapshot.input.taskType;
-    const kind = artifactKind(node, task);
+    const config = w.snapshot.template.config;
+    const kind = artifactKind(
+      config.executionMode === 'graph' && node.templateKey === config.outputNodeKey
+        ? { stage: 'generate' }
+        : node,
+      task,
+    );
     const draft = this.artifact(w.latestDraftId, w);
     const artifact: WorkflowArtifact = {
       id: randomUUID(),
@@ -552,7 +580,7 @@ export class WorkflowService {
   private releaseOrHold(w: WorkflowRun, node: WorkflowNode, type: string) {
     if (node.gate === 'manual') {
       node.status = 'awaiting_gate';
-      this.wait(w, 'GATE', `「${node.name}」已完成，请查看后放行`, type);
+      this.wait(w, 'GATE', `「${node.name}」已完成，请查看内容并确认继续`, type);
       return;
     }
     node.status = 'released';
@@ -602,6 +630,16 @@ export class WorkflowService {
   }
   private afterRound(w: WorkflowRun) {
     const round = this.currentRound(w);
+    const graph = w.snapshot.template.config;
+    if (graph.executionMode === 'graph') {
+      if (round + 1 < (graph.maxRounds ?? 3)) {
+        this.resetRound(w, round + 1);
+        this.save(w, 'debate.round_scheduled');
+        const next = readyNode(w.nodes);
+        if (next) this.enqueue(w, next);
+      } else this.finish(w);
+      return;
+    }
     const merge = [...w.nodes]
       .reverse()
       .find((n) => n.stage === 'merge' && n.status === 'released' && n.round === round);
@@ -679,7 +717,10 @@ export class WorkflowService {
     w.reasonCode = null;
     if (result.type !== 'chapter_draft' || !w.targetDocumentId) {
       w.status = 'awaiting_acceptance';
-      w.reason = '编排结果已准备好，请审阅后保存到对应分类';
+      w.reason =
+        result.type === 'discussion_summary'
+          ? '辩论已完成，汇总结论与各轮发言已保存，请审阅后确认结束'
+          : '编排结果已准备好，请审阅后保存到对应分类';
       this.save(w, 'workflow.awaiting_acceptance');
       return;
     }
@@ -727,9 +768,22 @@ export class WorkflowService {
     const profile = w.snapshot.profiles.find(
       (p) => p.id === node.agentVersionId,
     ) as AgentProfileVersion;
-    const context = structuredClone(w.snapshot.contexts[profile.id]) as ContextPreview;
+    const frozen = w.snapshot.contexts[profile.id];
+    if (!frozen) throw new AppError('INTERNAL_ERROR', '工作流角色上下文不存在', 500);
+    const providerConfigId = profile.config.providerConfigId ?? w.snapshot.input.providerConfigId;
+    const connection = this.writing.providers.get(providerConfigId).config.connection;
+    const transport = { baseUrl: connection.baseUrl, credentialRef: connection.credentialRef };
+    const context: ContextPreview = {
+      ...structuredClone(frozen),
+      request: {
+        ...structuredClone(frozen.request),
+        connectionSnapshot: { ...frozen.request.connectionSnapshot, ...transport },
+      },
+    };
     const config = w.snapshot.template.config;
     const task = w.snapshot.input.taskType;
+    const step = config.steps.find((candidate) => candidate.key === node.templateKey);
+    const embedded = step?.stage === 'debate';
     const allowed = upstreamTemplateKeys(config, node.templateKey);
     const upstream: {
       id: string;
@@ -748,16 +802,62 @@ export class WorkflowService {
           ...(note ? { notes: note } : {}),
         });
     };
-    for (const step of config.steps) {
-      if (!allowed.has(step.key)) continue;
-      if (['draft', 'generate', 'review', 'revise'].includes(step.stage)) continue;
-      take(this.latestOf(w, step.key), w.notes[this.latestOf(w, step.key)?.id ?? '']);
+    const graph = config.executionMode === 'graph';
+    if (graph || embedded) {
+      for (const key of node.dependsOn) {
+        const parent = w.nodes.find((candidate) => candidate.key === key);
+        if (parent?.artifactId) {
+          const artifactId =
+            embedded &&
+            parent.round < node.round &&
+            ['draft', 'generate', 'revise'].includes(parent.stage)
+              ? (w.latestDraftId ?? parent.artifactId)
+              : parent.artifactId;
+          take(this.artifact(artifactId, w), w.notes[artifactId]);
+        }
+      }
+      // The final summarizer sees the complete connected debate, not just its last turn.
+      if (config.steps.find((step) => step.key === node.templateKey)?.runWhen === 'after_rounds') {
+        const connected = new Set(node.dependsOn);
+        for (let changed = true; changed; ) {
+          changed = false;
+          for (const source of w.nodes)
+            if (connected.has(source.key))
+              for (const parent of source.dependsOn)
+                if (!connected.has(parent)) {
+                  connected.add(parent);
+                  changed = true;
+                }
+        }
+        upstream.length = 0;
+        for (const source of w.nodes)
+          if (connected.has(source.key) && source.status === 'released' && source.artifactId)
+            take(this.artifact(source.artifactId, w), w.notes[source.artifactId]);
+      }
+    } else {
+      for (const step of config.steps) {
+        if (!allowed.has(step.key)) continue;
+        if (['draft', 'generate', 'review', 'revise'].includes(step.stage)) continue;
+        take(this.latestOf(w, step.key), w.notes[this.latestOf(w, step.key)?.id ?? '']);
+      }
+      const draft = this.artifact(w.latestDraftId, w);
+      if (['review', 'revise'].includes(node.stage) || w.latestDraftId) {
+        if (draft && node.stage !== 'plan' && node.stage !== 'analysis')
+          take(draft, w.notes[draft.id]);
+      }
     }
-    const draft = this.artifact(w.latestDraftId, w);
-    if (['review', 'revise'].includes(node.stage) || w.latestDraftId) {
-      if (draft && node.stage !== 'plan' && node.stage !== 'analysis')
-        take(draft, w.notes[draft.id]);
-    }
+    const outputStage =
+      graph && node.templateKey === config.outputNodeKey ? 'generate' : node.stage;
+    const guide = stageGuide({ stage: outputStage }, task);
+    if (graph)
+      context.request.systemPrompt += `\n当前节点：${node.name}\n节点任务：${step?.instructions ?? ''}\n${step?.runWhen === 'after_rounds' ? '你在全部辩论轮次结束后汇总。综合连入节点的完整讨论记录，明确依据，保留未解决分歧。' : '你正在参加多 Agent 辩论。上游内容是其他参与者或你上一轮的发言，请根据证据回应，允许坚持不同意见。'}\n本节点输出要求：${guide}`;
+    const participant =
+      node.debateParticipant === undefined
+        ? undefined
+        : step?.debate?.participants[node.debateParticipant];
+    if (embedded)
+      context.request.systemPrompt += `\n当前为工作流中的多 Agent 辩论节点：${step.name}\n议题：${step.instructions || '围绕上游内容提出质疑、回应和改进建议。'}\n${participant ? `你正在参加多 Agent 辩论的第 ${(node.debateRound ?? 0) + 1} / ${step.debate?.rounds} 轮。你的立场：${participant.instructions}。首轮独立发言，后续逐条回应上一轮其他参与者的论点。` : '你在全部辩论轮次结束后汇总。输出共识、分歧、依据与可执行建议，供下游节点参考；不要把讨论结论冒充原始稿件。'}\n本节点输出要求：${guide}`;
+    if (!graph && !embedded) context.request.systemPrompt += `\n本节点输出要求：${guide}`;
     let adoptedIssues: ReviewIssue[] = [];
     if (node.stage === 'revise') {
       const previous = [...w.nodes]
@@ -775,8 +875,22 @@ export class WorkflowService {
         timestamp: 0,
         content: JSON.stringify({
           ...initial,
-          workflowNode: { key: node.key, stage: node.stage, round: node.round },
-          outputFormat: stageGuide(node, task),
+          workflowNode: {
+            key: node.key,
+            stage: node.stage,
+            round: node.round,
+            ...(embedded ? { debateKey: step.key, debateRound: node.debateRound } : {}),
+          },
+          outputFormat: guide,
+          ...(graph || embedded
+            ? {
+                resultInstructions: guide,
+                nodeInstructions: [step?.instructions, participant?.instructions]
+                  .filter(Boolean)
+                  .join('\n'),
+                totalRounds: embedded ? step.debate?.rounds : (config.maxRounds ?? 3),
+              }
+            : {}),
           feedback: w.feedback,
           upstream,
           ...(node.stage === 'revise'
@@ -801,7 +915,6 @@ export class WorkflowService {
         422,
       );
     context.hash = digest(stable(context));
-    const providerConfigId = profile.config.providerConfigId ?? w.snapshot.input.providerConfigId;
     const input = writingRunInputSchema.parse({
       projectId: w.projectId,
       sessionId: null,
@@ -821,6 +934,11 @@ export class WorkflowService {
     const checkpoint = previous?.checkpoint_json
       ? decode<LoopCheckpoint>(previous.checkpoint_json)
       : null;
+    if (checkpoint)
+      checkpoint.initialRequest.connectionSnapshot = {
+        ...piConnectionSchema.parse(checkpoint.initialRequest.connectionSnapshot),
+        ...transport,
+      };
     const reusable =
       checkpoint &&
       checkpoint.lastTurn.response.stop === 'tool_calls' &&
@@ -866,7 +984,14 @@ export class WorkflowService {
     }
     // Only results that already exist become history; unstarted nodes simply run later.
     for (const n of w.nodes)
-      if (stale.has(n.key) && !['pending', 'cancelled'].includes(n.status)) n.status = 'stale';
+      if (stale.has(n.key) && !['pending', 'cancelled'].includes(n.status)) {
+        if (w.snapshot.template.config.executionMode === 'graph' || hasDebateNodes(w)) {
+          n.status = 'pending';
+          if (w.latestDraftId === n.artifactId) w.latestDraftId = null;
+          n.artifactId = null;
+          n.error = null;
+        } else n.status = 'stale';
+      }
     return stale;
   }
   private resetRound(w: WorkflowRun, round: number, withRevision = false) {
@@ -912,7 +1037,10 @@ export class WorkflowService {
         if (complete) {
           w.status = 'completed';
           w.outcome = 'accepted';
-          w.reason = '编排结果已保存';
+          w.reason =
+            w.result?.type === 'discussion_summary'
+              ? '讨论结论已确认，全部发言已保留'
+              : '编排结果已保存';
         } else w.reason = `已采用 ${w.acceptedResults.length} 条结果，其余候选待审阅`;
       } else if (action === 'cancel' || action === 'reject') {
         for (const n of w.nodes) {
@@ -996,7 +1124,11 @@ export class WorkflowService {
             w.latestDraftId = artifact.id;
           const outputEdited = isWorkflowOutputKind(artifact.kind);
           this.invalidateAfter(w, node.key);
-          if (outputEdited) {
+          if (
+            outputEdited &&
+            w.snapshot.template.config.executionMode !== 'graph' &&
+            !hasDebateNodes(w)
+          ) {
             // Reviewers consumed the old draft; re-run them as a new round on the edited draft.
             for (const n of w.nodes)
               if (n.stage === 'review' || n.stage === 'merge')
@@ -1021,7 +1153,12 @@ export class WorkflowService {
             throw new AppError('FORBIDDEN', '已有结果被采用，请新建任务补充缺失分类', 403);
           const node = [...w.nodes]
             .reverse()
-            .find((n) => ['draft', 'generate'].includes(n.stage) && n.status === 'released');
+            .find(
+              (n) =>
+                (w.snapshot.template.config.executionMode === 'graph'
+                  ? n.templateKey === w.snapshot.template.config.outputNodeKey
+                  : ['draft', 'generate'].includes(n.stage)) && n.status === 'released',
+            );
           if (!node) throw new AppError('NOT_FOUND', '找不到生成节点', 404);
           const labels = w.missingKinds
             .map((kind) => elementLabels[kind as keyof typeof elementLabels] ?? kind)
@@ -1029,23 +1166,42 @@ export class WorkflowService {
           w.feedback =
             `${w.feedback}\n上一版缺少这些分类：${labels}。请输出包含上一版全部条目以及缺失分类的完整结果。`.trim();
           this.rejectProposal(w);
+          if (
+            w.snapshot.template.config.executionMode === 'graph' &&
+            w.latestDraftId === node.artifactId
+          )
+            w.latestDraftId = null;
           node.status = 'pending';
           node.artifactId = null;
           node.error = null;
           this.invalidateAfter(w, node.key);
-          for (const n of w.nodes.filter((x) => x.stage === 'merge' && x.status !== 'stale'))
-            n.status = 'stale';
-          this.resetRound(w, this.currentRound(w) + 1);
-          // The new round's reviewers depend on the regenerated draft.
-          for (const n of w.nodes.filter((x) => x.round === w.round && x.stage === 'review'))
-            n.dependsOn = [node.key];
+          if (!hasDebateNodes(w)) {
+            for (const n of w.nodes.filter((x) => x.stage === 'merge' && x.status !== 'stale'))
+              n.status = 'stale';
+            if (w.snapshot.template.config.executionMode !== 'graph')
+              this.resetRound(w, this.currentRound(w) + 1);
+            // The new round's reviewers depend on the regenerated draft.
+            for (const n of w.nodes.filter((x) => x.round === w.round && x.stage === 'review'))
+              n.dependsOn = [node.key];
+          }
         } else if (action === 'rerun') {
-          if (!['awaiting_input', 'paused', 'failed', 'limited', 'interrupted'].includes(w.status))
+          if (
+            !['awaiting_input', 'paused', 'failed', 'limited', 'interrupted'].includes(w.status) &&
+            !(
+              (w.snapshot.template.config.executionMode === 'graph' || hasDebateNodes(w)) &&
+              w.status === 'awaiting_acceptance'
+            )
+          )
             throw new AppError('FORBIDDEN', '当前状态无法重跑节点', 403);
           const node = gateNode();
           if (node.stage === 'merge')
             throw new AppError('FORBIDDEN', '审校汇总由系统生成，请重跑审校节点', 403);
           this.rejectProposal(w);
+          if (
+            (w.snapshot.template.config.executionMode === 'graph' || hasDebateNodes(w)) &&
+            w.latestDraftId === node.artifactId
+          )
+            w.latestDraftId = null;
           node.status = 'pending';
           node.artifactId = null;
           node.error = null;
@@ -1128,6 +1284,12 @@ export class WorkflowService {
       throw new AppError('FORBIDDEN', '请先完成生成并等待流程暂停', 403);
     if (w.acceptedResults.length)
       throw new AppError('FORBIDDEN', '已有部分结果被采用，请新建任务使用最新资料', 403);
+    if (w.snapshot.template.config.executionMode === 'graph' || hasDebateNodes(w))
+      throw new AppError(
+        'FORBIDDEN',
+        '请新建辩论以使用最新资料；当前辩论保留启动时的资料快照',
+        403,
+      );
     if (w.snapshot.input.taskType === 'basic_information') {
       for (const reference of w.snapshot.input.elementTargets ?? []) {
         const current = this.store.novels.getDocument(reference.documentId);
@@ -1217,8 +1379,8 @@ export class WorkflowService {
       latest.sourceSnapshotAccepted = false;
       for (const n of latest.nodes)
         if (['review', 'merge'].includes(n.stage) && n.status !== 'stale') n.status = 'stale';
-      latest.adoption = {};
       this.resetRound(latest, this.currentRound(latest) + 1);
+      latest.adoption = {};
       latest.status = 'queued';
       latest.reason = null;
       latest.reasonCode = null;
@@ -1243,6 +1405,8 @@ export class WorkflowService {
     this.store.database.transaction(() => {
       const w = this.get(String(b.workflow_id));
       if (!['running', 'queued'].includes(w.status)) throw new LoopStop('cancelled');
+      const node = w.nodes.find((item) => item.runIds.includes(runId));
+      if (node?.status === 'queued') node.status = 'running';
       w.modelCalls++;
       this.save(w, 'model.requested');
     });

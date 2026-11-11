@@ -42,6 +42,7 @@ test('a chapter-free work generates one category, survives refresh and accepts i
   await page.getByRole('link', { name: '基本信息', exact: true }).click();
   const panel = page.getByRole('region', { name: '基本信息管理', exact: true });
   await expect(panel).toBeVisible();
+  await panel.getByRole('button', { name: '高级模式', exact: true }).click();
   // The AI assistant runs the shared basic-information orchestration; acceptance happens on its card.
   await panel.getByRole('button', { name: 'AI 助手', exact: false }).first().click();
   const assistant = page.getByRole('complementary', { name: 'AI 要素生成' });
@@ -108,6 +109,7 @@ test('authors create a world rule, lock fields, confirm, edit, restore and archi
   await page.goto(`/?project=${project.id}`);
   await page.getByRole('link', { name: '基本信息', exact: true }).click();
   const panel = page.getByRole('region', { name: '基本信息管理', exact: true });
+  await panel.getByRole('button', { name: '高级模式', exact: true }).click();
   await panel.getByText('添加设定', { exact: true }).click();
   await panel.getByRole('button', { name: '新增世界与场景', exact: true }).click();
   await panel.getByRole('textbox', { name: '名称', exact: true }).fill('回溯法则');

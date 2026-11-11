@@ -226,6 +226,7 @@ export class WritingService {
         async *stream(request, signal) {
           // Count every adapter request before contacting a provider, including failed attempts.
           service.workflows.reserveCall(id);
+          service.elements.reserveCall(id);
           if (estimateTokens(request) > preview.inputLimit)
             throw new AgentError('CONTEXT_TOO_LARGE');
           yield* adapter.stream(request, signal);
@@ -235,9 +236,11 @@ export class WritingService {
       const result = await runLoop({
         runId: id,
         adapter: boundedAdapter,
-        registry: this.workflows.binding(id)
-          ? this.workflows.registry(id)
-          : actualActions(this.store, id, this.skills),
+        registry: this.elements.binding(id)
+          ? this.elements.registry(id)
+          : this.workflows.binding(id)
+            ? this.workflows.registry(id)
+            : actualActions(this.store, id, this.skills),
         request: preview.request,
         recorder,
         signal: controller.signal,
@@ -267,6 +270,10 @@ export class WritingService {
     } finally {
       recorder.dispose();
     }
+  }
+  deleteProvider(id: string, revision: number) {
+    if (this.checking) throw new AppError('PROJECT_BUSY', '请等待连接检查结束后删除模型配置', 409);
+    return this.providers.delete(id, revision);
   }
   async checkProvider(id: string) {
     if (

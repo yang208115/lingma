@@ -118,7 +118,9 @@ test('the outline assistant generates, previews and saves a total outline while 
     ).json()
   ).data;
   await page.goto(`/?project=${f.project.id}&document=${event.document.id}&view=outline`);
+  await page.getByRole('button', { name: '大纲助手', exact: true }).click();
   await page.getByLabel('写作模型', { exact: true }).selectOption(f.provider.id);
+  await page.getByRole('button', { name: '故事总纲', exact: true }).click();
   await page.getByRole('button', { name: 'AI 生成总纲', exact: true }).click();
   await expect(page.locator('.chat-task textarea')).toHaveValue(/生成一份完整的故事总纲/);
   await page.getByRole('button', { name: '发送', exact: true }).click();

@@ -86,6 +86,12 @@ export function writingRoutes(service: WritingService) {
       ),
     });
   });
+  app.delete('/provider-configs/:id', async (c) => {
+    const { revision } = z.strictObject({ revision: z.int().positive() }).parse(await c.req.json());
+    return c.json({
+      data: service.deleteProvider(idSchema.parse(c.req.param('id')), revision),
+    });
+  });
   app.post('/provider-configs/:id/check', async (c) =>
     c.json({ data: await service.checkProvider(idSchema.parse(c.req.param('id'))) }),
   );

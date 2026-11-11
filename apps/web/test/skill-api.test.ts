@@ -83,7 +83,9 @@ it('reports the HTTP status of a non-JSON response without exposing its raw cont
       headers: { 'Content-Type': 'text/plain' },
     }),
   );
-  await expect(request('/skills', { parse: (value) => value })).rejects.toMatchObject({
+  await expect(
+    request('/skills/import/local', { parse: (value) => value }, { method: 'POST' }),
+  ).rejects.toMatchObject({
     code: 'HTTP_ERROR',
     message: expect.stringContaining('HTTP 502'),
     details: { status: 502 },

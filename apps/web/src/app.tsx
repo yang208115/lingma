@@ -472,7 +472,7 @@ function WorkflowPage({ mode }: { mode: 'profiles' | 'templates' }) {
     );
   return (
     <main
-      className="management-page"
+      className={`management-page${mode === 'profiles' ? ' agent-management-page' : ' template-management-page'}`}
       aria-label={mode === 'profiles' ? 'Agent 角色库' : '工作流模板'}
     >
       {mode === 'profiles' && (

@@ -18,6 +18,7 @@ export function StoryEventDetails({
   onSave,
   onAddChapter,
   onOpenChapter,
+  chaptersOnly = false,
 }: {
   event: Document;
   structure: Structure;
@@ -25,26 +26,35 @@ export function StoryEventDetails({
   onSave(input: UpdateStoryEvent): Promise<void>;
   onAddChapter(title: string): Promise<void>;
   onOpenChapter(id: string): void;
+  chaptersOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
   const ids = new Set(linkedChapterIds(event));
   const chapters = orderedChapters(structure).filter((chapter) => ids.has(chapter.id));
   return (
-    <section className="story-event-details" aria-label="事件信息与关联章节">
-      <div className="story-event-overview">
-        <span>
-          <Clock3 size={14} aria-hidden="true" />
-          {event.storyTime || '时间待定'}
-        </span>
-        <button type="button" disabled={busy} onClick={() => setEditing(true)}>
-          <Pencil size={13} aria-hidden="true" /> 编辑事件
-        </button>
-      </div>
-      {event.summary && <p className="story-event-summary">{event.summary}</p>}
+    <section
+      className={`story-event-details${chaptersOnly ? ' outline-reader-chapters' : ''}`}
+      aria-label="事件信息与关联章节"
+    >
+      {!chaptersOnly && (
+        <>
+          <div className="story-event-overview">
+            <span>
+              <Clock3 size={14} aria-hidden="true" />
+              {event.storyTime || '时间待定'}
+            </span>
+            <button type="button" disabled={busy} onClick={() => setEditing(true)}>
+              <Pencil size={13} aria-hidden="true" /> 编辑事件
+            </button>
+          </div>
+          {event.summary && <p className="story-event-summary">{event.summary}</p>}
+        </>
+      )}
       <div className="story-event-chapters-heading">
         <h2>
-          <Link2 size={14} aria-hidden="true" /> 关联章节 <span>{chapters.length}</span>
+          {!chaptersOnly && <Link2 size={14} aria-hidden="true" />}{' '}
+          {chaptersOnly ? '关联正文' : '关联章节'} · {chapters.length} 章
         </h2>
         <button type="button" disabled={busy} onClick={() => setEditing(true)}>
           关联已有章节
@@ -58,19 +68,28 @@ export function StoryEventDetails({
           </button>
         ))}
       </div>
-      {!chapters.length && <p className="muted">这个事件还没有关联章节，可以先完善事件大纲。</p>}
-      <button
-        type="button"
-        className="story-event-add-chapter"
-        disabled={busy}
-        onClick={() => setAdding(true)}
-      >
-        <Plus size={14} aria-hidden="true" /> 为此事件新建章节
-      </button>
-      <p className="story-event-hint">
-        一个事件可跨多个章节，一个章节也可涉及多个事件。章节仍按阅读顺序排列。
-      </p>
-      <h2 className="story-event-outline-heading">事件详细大纲</h2>
+      {!chapters.length && (
+        <p className="muted">
+          {chaptersOnly
+            ? '这份规划尚未关联章节。起草后可预览，确认采用再保存为正文。'
+            : '这个事件还没有关联章节，可以先完善事件大纲。'}
+        </p>
+      )}
+      <details className="story-event-other-actions">
+        <summary>其他章节操作</summary>
+        <button
+          type="button"
+          className="story-event-add-chapter"
+          disabled={busy}
+          onClick={() => setAdding(true)}
+        >
+          <Plus size={14} aria-hidden="true" /> 为此事件新建章节
+        </button>
+        <p className="story-event-hint">
+          一个事件可跨多个章节，一个章节也可涉及多个事件。章节仍按阅读顺序排列。
+        </p>
+      </details>
+      {!chaptersOnly && <h2 className="story-event-outline-heading">事件详细大纲</h2>}
       {editing && (
         <EventPlanDialog
           event={event}

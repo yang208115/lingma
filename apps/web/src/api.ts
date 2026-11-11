@@ -6,6 +6,7 @@ import type {
   Project,
   PutStructure,
   StartOutlineWriting,
+  UpdateChapterPlan,
   UpdateStoryEvent,
 } from '@lingma/shared';
 import {
@@ -30,10 +31,53 @@ export class ApiError extends Error {
     super(message);
   }
 }
+// Allow about 30 seconds for a restarting backend to become available.
+const readRetryDelays = [500, 1000, 2000, 4000, 8000, 8000, 8000];
+
+function waitForRetry(delay: number, signal?: AbortSignal | null): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, delay);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
 export async function request<T>(
   path: string,
   schema: { parse(value: unknown): T },
   init: RequestInit = {},
+): Promise<T> {
+  const retryable = (init.method ?? 'GET').toUpperCase() === 'GET';
+  for (let attempt = 0; ; attempt++) {
+    init.signal?.throwIfAborted();
+    try {
+      return await requestOnce(path, schema, init);
+    } catch (error) {
+      init.signal?.throwIfAborted();
+      const delay = readRetryDelays[attempt];
+      if (
+        !retryable ||
+        delay === undefined ||
+        !(error instanceof ApiError) ||
+        !(error.code === 'NETWORK_ERROR' || [502, 503, 504].includes(Number(error.details.status)))
+      )
+        throw error;
+      await waitForRetry(delay, init.signal);
+    }
+  }
+}
+
+async function requestOnce<T>(
+  path: string,
+  schema: { parse(value: unknown): T },
+  init: RequestInit,
 ): Promise<T> {
   let response: Response;
   try {
@@ -53,9 +97,13 @@ export async function request<T>(
   }
   if (!response.ok) {
     const parsed = errorResponseSchema.safeParse(body);
+    const details = { status: response.status, requestId: response.headers.get('X-Request-ID') };
     throw parsed.success
-      ? new ApiError(parsed.data.error.code, parsed.data.error.message, parsed.data.error.details)
-      : new ApiError('HTTP_ERROR', `请求失败（${response.status}）`);
+      ? new ApiError(parsed.data.error.code, parsed.data.error.message, {
+          ...parsed.data.error.details,
+          ...details,
+        })
+      : new ApiError('HTTP_ERROR', `请求失败（${response.status}）`, details);
   }
   return schema.parse(body);
 }
@@ -65,6 +113,14 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 export const api = {
+  updateChapterPlan: async (id: string, input: UpdateChapterPlan) =>
+    (
+      await request(
+        `/documents/${id}/chapter-plan`,
+        responseSchema(documentDetailSchema),
+        json('PUT', input),
+      )
+    ).data,
   exportUrl: (projectId: string, chapterId?: string) =>
     `/api/v1/projects/${projectId}/export.txt${chapterId ? `?chapterId=${encodeURIComponent(chapterId)}` : ''}`,
   exportText: async (projectId: string, chapterId?: string) => {

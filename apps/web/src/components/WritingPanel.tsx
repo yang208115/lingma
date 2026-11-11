@@ -5,6 +5,7 @@ import {
   hasElementContent,
   isBasicInformationKind,
   isStoryEventKind,
+  isWritingPlanKind,
   linkedChapterIds,
   orderedChapters,
   type Proposal,
@@ -36,7 +37,7 @@ import {
   Square,
   SquarePen,
 } from 'lucide-react';
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { ApiError, api } from '../api.js';
 import { elementApi } from '../element-api.js';
@@ -46,6 +47,7 @@ import { workflowApi } from '../workflow-api.js';
 import { textHash, writingApi } from '../writing-api.js';
 import { AssistantWorkflowCard } from './AssistantWorkflowCard.js';
 import { useAssistantWorkflows } from './AssistantWorkflows.js';
+import type { ChapterPlanningRequest, PlanningInsertion } from './ChapterPlans.js';
 import { ChatHistory } from './ChatHistory.js';
 import { ExecutionModeMenu } from './ExecutionModeMenu.js';
 import { MarkdownContent } from './MarkdownContent.js';
@@ -78,12 +80,18 @@ function remember(key: string, value: string) {
     /* Persistence is optional UI state. */
   }
 }
-function rememberedReferences(projectId: string): WritingReference[] {
+function rememberedReferences(projectId: string, sourcePlanId = ''): WritingReference[] {
   try {
     const result = writingReferenceSchema
       .array()
       .max(200)
-      .safeParse(JSON.parse(remembered(`lingma:references:${projectId}`) || '[]'));
+      .safeParse(
+        JSON.parse(
+          remembered(
+            `lingma:references:${projectId}${sourcePlanId ? `:plan:${sourcePlanId}` : ''}`,
+          ) || '[]',
+        ),
+      );
     return result.success ? result.data : [];
   } catch {
     return [];
@@ -93,6 +101,7 @@ export function WritingPanel({
   projectId,
   shortForm = false,
   outlineMode = false,
+  draftFrom,
   document,
   selection,
   beforeRun,
@@ -107,6 +116,7 @@ export function WritingPanel({
   projectId: string;
   shortForm?: boolean;
   outlineMode?: boolean;
+  draftFrom?: Document | undefined;
   document: Document | undefined;
   selection: { from: number; to: number };
   beforeRun(): Promise<void>;
@@ -115,18 +125,29 @@ export function WritingPanel({
   onPreviewPlan?(preview: { runId: string; title: string; content: string; label: string }): void;
   onOutlinesCreated(projectId: string, documentId: string): Promise<void>;
   proposalRefresh?: number;
-  composerInsertion: { id: string; text: string } | null;
+  composerInsertion: PlanningInsertion | null;
   onComposerInsertionHandled(id: string): void;
 }) {
   const { structure, refresh: refreshWorkspace } = useProjectWorkspace();
   const currentStructure = structure?.project.id === projectId ? structure : null;
-  const [references, setReferences] = useState<WritingReference[]>(() =>
-    rememberedReferences(projectId),
-  );
+  const draftReference: WritingReference | undefined = draftFrom
+    ? {
+        type: 'document',
+        id: draftFrom.id,
+        label: `${draftFrom.kind === 'chapter_plan' ? '章纲' : '故事事件'}：${draftFrom.title}`,
+      }
+    : undefined;
+  const composerKey = `lingma:composer:${projectId}${draftFrom ? `:plan:${draftFrom.id}` : ''}`;
+  const referencesKey = `lingma:references:${projectId}${draftFrom ? `:plan:${draftFrom.id}` : ''}`;
+  const [references, setReferences] = useState<WritingReference[]>(() => {
+    const savedReferences = rememberedReferences(projectId, draftFrom?.id);
+    return savedReferences.length ? savedReferences : draftReference ? [draftReference] : [];
+  });
   useEffect(() => {
-    remember(`lingma:references:${projectId}`, JSON.stringify(references));
-  }, [projectId, references]);
+    remember(referencesKey, JSON.stringify(references));
+  }, [referencesKey, references]);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [providerId, setProviderId] = useProjectProvider(projectId);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [contextCleared, setContextCleared] = useState(false);
@@ -152,10 +173,16 @@ export function WritingPanel({
   >([]);
   const [messageCursor, setMessageCursor] = useState<string | null>(null);
   const [writingPurpose, setPurpose] = useState<'write' | 'rewrite' | 'review'>('write'),
-    [task, setTask] = useState(() => remembered(`lingma:composer:${projectId}`));
+    [task, setTask] = useState(
+      () =>
+        remembered(composerKey) ||
+        (draftReference
+          ? `请根据${referenceToken(draftReference)}起草新的正文章节，${draftFrom?.kind === 'chapter_plan' ? '沿用章纲的章节序号与标题' : '自行拟定章节标题'}，仅展开这份章纲或规划所限定的本章情节，不提前兑现后续章节的转折，不改写已有正文。先提交完整正文候选，等待我确认采用。`
+          : ''),
+    );
   useEffect(() => {
-    remember(`lingma:composer:${projectId}`, task);
-  }, [projectId, task]);
+    remember(composerKey, task);
+  }, [composerKey, task]);
   const [allowSearch, setAllowSearch] = useState(true),
     [includeFuture, setFuture] = useState(false),
     [reviewProposal, setAllowProposal] = useState(false);
@@ -178,11 +205,21 @@ export function WritingPanel({
     [streamEpoch, setStreamEpoch] = useState(0);
   const taskInput = useRef<HTMLTextAreaElement>(null);
   const inserted = useRef('');
+  const [planningRequest, setPlanningRequest] = useState<ChapterPlanningRequest | null>(null);
+  const [pendingPlanningTemplate, setPendingPlanningTemplate] = useState(false);
+  const [automaticPlanning, setAutomaticPlanning] = useState<string | null>(null);
   const [focusComposer, setFocusComposer] = useState(false);
   useEffect(() => {
     if (!composerInsertion || busy || inserted.current === composerInsertion.id) return;
     inserted.current = composerInsertion.id;
-    const next = `${task}${task && !task.endsWith('\n\n') ? '\n\n' : ''}${composerInsertion.text}`;
+    const next = composerInsertion.planning
+      ? composerInsertion.text
+      : `${task}${task && !task.endsWith('\n\n') ? '\n\n' : ''}${composerInsertion.text}`;
+    if (composerInsertion.planning) {
+      setPlanningRequest(composerInsertion.planning);
+      setPendingPlanningTemplate(true);
+      setAutomaticPlanning(composerInsertion.autoStart ? composerInsertion.text : null);
+    }
     if (next.length > 32000) {
       setError('引用与提问合计超过 32000 字符，请缩小正文选区或精简提问后重试。');
     } else {
@@ -279,6 +316,32 @@ export function WritingPanel({
     openWorkflowSession,
   );
   useEffect(() => {
+    if (!pendingPlanningTemplate) return;
+    const template = workflows.templates
+      .flatMap((item) => item.versions.slice(0, 1))
+      .find((version) => version.config.taskType === 'chapter_planning');
+    if (!template) {
+      if (workflows.templates.length) {
+        setPendingPlanningTemplate(false);
+        setAutomaticPlanning(null);
+        setError('没有可用的分章规划工作流，请先发布分章规划模板。');
+      }
+      return;
+    }
+    workflows.setVersionId(template.id);
+    setPendingPlanningTemplate(false);
+  }, [pendingPlanningTemplate, workflows.templates, workflows.setVersionId]);
+  const [draftTemplateReady, setDraftTemplateReady] = useState(!draftFrom);
+  useEffect(() => {
+    if (!draftFrom || draftTemplateReady) return;
+    const template = workflows.templates
+      .flatMap((item) => item.versions.slice(0, 1))
+      .find((version) => version.config.taskType === 'chapter_write');
+    if (!template) return;
+    workflows.setVersionId(template.id);
+    setDraftTemplateReady(true);
+  }, [draftFrom, draftTemplateReady, workflows.templates, workflows.setVersionId]);
+  useEffect(() => {
     onProposalsChange(
       projectId,
       run?.id ?? null,
@@ -305,7 +368,10 @@ export function WritingPanel({
           p.data.some((item) => item.id === old) ? old : p.data[0]?.id || '',
         );
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => setError(e.message))
+      .finally(() => {
+        if (mounted.current) setProvidersLoaded(true);
+      });
   }, [setProviderId]);
   useEffect(() => {
     remember(`lingma:session:${projectId}`, sessionId);
@@ -515,7 +581,7 @@ export function WritingPanel({
       outlineMode &&
       document &&
       document.kind !== 'master_outline' &&
-      !isStoryEventKind(document.kind)
+      !isWritingPlanKind(document.kind)
     )
       throw new Error('请先新建或选择一份大纲');
     if (
@@ -527,6 +593,7 @@ export function WritingPanel({
     await beforeRun();
     const targetDocument =
       document &&
+      !(workflowTask === 'chapter_planning' && planningRequest) &&
       (workflowTask
         ? document.kind ===
           {
@@ -535,6 +602,8 @@ export function WritingPanel({
             worldbuilding: 'worldbuilding',
             master_outline: 'master_outline',
             story_events: 'chapter_outline',
+            chapter_planning: 'chapter_plan',
+            discussion: null,
           }[workflowTask]
         : outlineMode || purpose === 'review' || document.kind === 'chapter')
         ? document
@@ -573,7 +642,48 @@ export function WritingPanel({
         isStoryEventKind(doc.kind) &&
         referencedVolumes.some((volume) => volume.title === doc.title),
     );
-    const referenceDocuments = [...referencedDocuments, ...volumeOutlines];
+    const sourceId =
+      workflowTask === 'chapter_planning' ? planningRequest?.sourceOutlineId : draftFrom?.id;
+    const sourcePlan = sourceId
+      ? structure.documents.find(
+          (item) =>
+            item.id === sourceId &&
+            !item.archived &&
+            (isWritingPlanKind(item.kind) || item.kind === 'master_outline'),
+        )
+      : undefined;
+    if (sourceId && !sourcePlan) throw new Error('来源规划已删除或归档，请重新选择');
+    const relatedPlans = sourcePlan
+      ? structure.documents
+          .filter(
+            (item) =>
+              !item.archived &&
+              item.kind === 'chapter_plan' &&
+              item.parentOutlineId ===
+                (sourcePlan.kind === 'chapter_plan' ? sourcePlan.parentOutlineId : sourcePlan.id),
+          )
+          .sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id))
+      : [];
+    const sourceIndex = relatedPlans.findIndex((item) => item.id === sourceId);
+    const neighbors =
+      sourcePlan?.kind === 'chapter_plan'
+        ? relatedPlans.filter((_, index) => Math.abs(index - sourceIndex) === 1)
+        : relatedPlans;
+    const parent = sourcePlan?.parentOutlineId
+      ? structure.documents.find((item) => item.id === sourcePlan.parentOutlineId && !item.archived)
+      : undefined;
+    if (draftFrom && !sourcePlan) throw new Error('来源规划已删除或归档，请返回大纲重新选择');
+    const referenceDocuments = [
+      ...new Map(
+        [
+          ...referencedDocuments,
+          ...volumeOutlines,
+          ...neighbors,
+          ...(parent ? [parent] : []),
+          ...(sourcePlan ? [sourcePlan] : []),
+        ].map((item) => [item.id, item]),
+      ).values(),
+    ];
     const referenceIds = new Set(referenceDocuments.map((doc) => doc.id));
     const useFuture =
       future ||
@@ -593,7 +703,7 @@ export function WritingPanel({
         return (
           !(doc.kind === 'chapter' && later) &&
           !(
-            isStoryEventKind(doc.kind) &&
+            isWritingPlanKind(doc.kind) &&
             !useFuture &&
             (!related.length || later || targetIndex < 0)
           )
@@ -604,7 +714,7 @@ export function WritingPanel({
         versionId: doc.currentVersionId,
         title: doc.title,
         kind: doc.kind,
-        planning: isStoryEventKind(doc.kind),
+        planning: isWritingPlanKind(doc.kind),
       }));
     setOptions(available);
     for (const doc of referenceDocuments) {
@@ -757,6 +867,10 @@ export function WritingPanel({
   }
   function sendTask() {
     if (busy || runActive || !task.trim() || !providerId) return;
+    if (!draftTemplateReady) {
+      setError('正在读取正文工作流，请稍后再发送。');
+      return;
+    }
     if (workflows.active) {
       setError('作品有待处理编排，请在运行卡中继续或结束。');
       return;
@@ -786,6 +900,12 @@ export function WritingPanel({
             manualGates,
             providerConfigId: providerId,
             input: prepared.input,
+            ...(workflows.template.config.taskType === 'chapter_planning' && planningRequest
+              ? planningRequest
+              : {}),
+            ...(draftFrom && workflows.template.config.taskType === 'chapter_write'
+              ? { sourceOutlineId: draftFrom.id }
+              : {}),
             mode:
               workflows.template.config.taskType === 'basic_information'
                 ? 'fill'
@@ -826,6 +946,38 @@ export function WritingPanel({
       await refreshMessages();
     });
   }
+  const sendAutomaticPlanning = useEffectEvent(() => sendTask());
+  useEffect(() => {
+    if (!automaticPlanning || busy || !providersLoaded) return;
+    if (pendingPlanningTemplate && !workflows.error) return;
+    setAutomaticPlanning(null);
+    if (task !== automaticPlanning) return;
+    if (!providerId) {
+      setError('请先配置并选择模型，再点击发送开始拆分。拆分要求已保留。');
+      setFocusComposer(true);
+      return;
+    }
+    if (runActive || workflows.active) {
+      setError('请先处理当前运行，再点击发送开始拆分。拆分要求已保留。');
+      return;
+    }
+    if (pendingPlanningTemplate || workflows.template?.config.taskType !== 'chapter_planning') {
+      setError(workflows.error || '分章规划工作流尚未就绪，请稍后重试。');
+      return;
+    }
+    sendAutomaticPlanning();
+  }, [
+    automaticPlanning,
+    busy,
+    providersLoaded,
+    providerId,
+    pendingPlanningTemplate,
+    runActive,
+    workflows.active,
+    workflows.error,
+    workflows.template,
+    task,
+  ]);
   function openConversation(
     session: SessionHistory,
     selectedRunId = session.latestRunId,
@@ -1206,7 +1358,9 @@ export function WritingPanel({
                     if (
                       saved.document.kind === 'chapter' ||
                       (outlineMode &&
-                        ['master_outline', 'chapter_outline'].includes(saved.document.kind))
+                        ['master_outline', 'chapter_outline', 'chapter_plan'].includes(
+                          saved.document.kind,
+                        ))
                     )
                       await onOutlinesCreated(projectId, first);
                   }
@@ -1298,8 +1452,30 @@ export function WritingPanel({
                 </select>
                 <ChevronDown size={12} aria-hidden="true" />
               </label>
+              {planningRequest && workflows.template?.config.taskType === 'chapter_planning' && (
+                <p className="chapter-planning-request" role="status">
+                  {planningRequest.chapterCount
+                    ? `本次拆分 ${planningRequest.chapterCount} 章`
+                    : '由 AI 自动安排章数'}{' '}
+                  ·{' '}
+                  {planningRequest.newVolumeTitle ??
+                    currentStructure?.volumes.find((item) => item.id === planningRequest.volumeId)
+                      ?.title ??
+                    '未分卷'}
+                  <button type="button" onClick={() => setPlanningRequest(null)}>
+                    清除拆分设置
+                  </button>
+                </p>
+              )}
               <ExecutionModeMenu
-                templates={workflows.templates}
+                allowDirect={!draftFrom}
+                templates={
+                  draftFrom
+                    ? workflows.templates.filter(
+                        (item) => item.versions[0]?.config.taskType === 'chapter_write',
+                      )
+                    : workflows.templates
+                }
                 value={workflows.versionId}
                 onChange={workflows.setVersionId}
               />
@@ -1526,7 +1702,11 @@ export function WritingPanel({
             )}
           </details>
           {document?.kind !== 'chapter' && purpose === 'write' && (
-            <p className="muted">AI 会拟定章节标题、选择所属卷并提交新章候选，确认后创建。</p>
+            <p className="muted">
+              {draftFrom?.kind === 'chapter_plan'
+                ? '正文将沿用章纲所属卷，确认候选后关联这份章纲。'
+                : 'AI 会拟定章节标题、选择所属卷并提交新章候选，确认后创建。'}
+            </p>
           )}
         </form>
       </div>

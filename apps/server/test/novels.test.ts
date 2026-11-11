@@ -31,7 +31,7 @@ async function fixture() {
   });
   const project = novels.createProject('雾港来信');
   const create = (
-    kind: 'chapter' | 'master_outline' | 'chapter_outline' | 'character',
+    kind: 'chapter' | 'master_outline' | 'chapter_outline' | 'chapter_plan' | 'character',
     title: string,
     extra = {},
   ) =>
@@ -529,4 +529,82 @@ describe('preview import and HTTP', () => {
     });
     expect(upload.status).toBe(201);
   });
+});
+
+it('edits chapter-plan ownership and links while retaining plans when a source is deleted', async () => {
+  const f = await fixture();
+  const source = f.create('chapter_outline', '第一卷');
+  const plan = f.create('chapter_plan', '第一章 章纲', {
+    parentOutlineId: source.document.id,
+    newVolumeTitle: '第一卷',
+    content: '码头初见。',
+  });
+  const chapter = f.novels.startOutlineWriting(plan.document.id, {
+    baseVersionId: plan.version.id,
+    baseStructureVersion: f.novels.getProject(f.project.id).structureVersion,
+    volumeId: null,
+  });
+  expect(chapter.document.volumeId).toBe(plan.document.volumeId);
+  expect(f.novels.getDocument(source.document.id).document.chapterIds).toEqual([
+    chapter.document.id,
+  ]);
+  const body = {
+    baseStructureVersion: f.novels.getProject(f.project.id).structureVersion,
+    title: '第一章 港口',
+    storyTime: '',
+    summary: '相遇。',
+    chapterIds: [chapter.document.id],
+    parentOutlineId: source.document.id,
+    volumeId: plan.document.volumeId,
+  };
+  const response = await f.app.request(`/api/v1/documents/${plan.document.id}/chapter-plan`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  expect(response.status).toBe(200);
+  expect((await response.json()).data.document).toMatchObject({
+    title: body.title,
+    parentOutlineId: source.document.id,
+    summary: '相遇。',
+  });
+  const stale = await f.app.request(`/api/v1/documents/${plan.document.id}/chapter-plan`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  expect(stale.status).toBe(409);
+  const other = f.novels.createProject('其他作品');
+  const foreign = f.novels.createDocument(
+    other.id,
+    createDocumentSchema.parse({
+      baseStructureVersion: other.structureVersion,
+      kind: 'master_outline',
+      title: '其他总纲',
+    }),
+  );
+  expect(() =>
+    f.novels.updateChapterPlan(plan.document.id, {
+      ...body,
+      baseStructureVersion: f.novels.getProject(f.project.id).structureVersion,
+      parentOutlineId: foreign.document.id,
+    }),
+  ).toThrow('章纲来源');
+  expect(() =>
+    f.create('chapter_plan', '无效来源', { parentOutlineId: chapter.document.id }),
+  ).toThrow('章纲来源');
+  f.novels.deleteDocument(
+    source.document.id,
+    source.version.id,
+    f.novels.getProject(f.project.id).structureVersion,
+  );
+  expect(f.novels.getDocument(plan.document.id).document.parentOutlineId).toBeNull();
+  expect(f.novels.getDocument(plan.document.id).version.content).toBe(plan.version.content);
+  f.novels.deleteDocument(
+    chapter.document.id,
+    chapter.version.id,
+    f.novels.getProject(f.project.id).structureVersion,
+  );
+  expect(f.novels.getDocument(plan.document.id).document.chapterIds).toEqual([]);
+  expect(f.novels.getDocument(plan.document.id).document.chapterId).toBeNull();
 });

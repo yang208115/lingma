@@ -9,9 +9,12 @@ import {
 import {
   applyNodeChanges,
   Background,
+  BaseEdge,
   type Connection,
   Controls,
   type Edge,
+  EdgeLabelRenderer,
+  type EdgeProps,
   Handle,
   MarkerType,
   MiniMap,
@@ -22,8 +25,10 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import {
+  Bot,
   GitBranch,
   Maximize2,
+  MessageSquare,
   Minimize2,
   Play,
   RotateCcw,
@@ -36,6 +41,8 @@ import { useEffect, useMemo, useState } from 'react';
 
 type Step = WorkflowTemplateConfig['steps'][number];
 const labels: Record<Step['stage'], string> = {
+  agent: 'Agent',
+  debate: '多 Agent 辩论',
   plan: '策划',
   draft: '正文 / 润色',
   generate: '通用内容生成',
@@ -44,6 +51,8 @@ const labels: Record<Step['stage'], string> = {
   revise: '定向修订',
 };
 const icons = {
+  agent: Bot,
+  debate: MessageSquare,
   plan: GitBranch,
   draft: WandSparkles,
   generate: Sparkles,
@@ -58,6 +67,10 @@ type CardNode = Node<
     agent: string;
     required: boolean;
     confirm?: boolean;
+    finalOutput?: boolean;
+    afterRounds?: boolean;
+    instructions?: string;
+    debate?: Step['debate'];
     runStatus?: string;
   },
   'workflow'
@@ -81,6 +94,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps<CardNode>) {
       {data.stage !== 'start' && data.stage !== 'revise' && (
         <Handle
           type="target"
+          id={data.stage === 'agent' ? 'input' : null}
           position={Position.Left}
           isConnectable={!system}
           aria-label={`${data.label} 输入连接点`}
@@ -104,6 +118,24 @@ function WorkflowNodeCard({ data, selected }: NodeProps<CardNode>) {
           className="workflow-feedback-handle"
         />
       )}
+      {data.stage === 'agent' && !data.afterRounds && (
+        <>
+          <Handle
+            id="feedback-in"
+            type="target"
+            position={Position.Top}
+            aria-label={`${data.label} 上轮发言输入`}
+            className="workflow-round-handle"
+          />
+          <Handle
+            id="feedback-out"
+            type="source"
+            position={Position.Bottom}
+            aria-label={`${data.label} 下轮反馈输出`}
+            className="workflow-round-handle"
+          />
+        </>
+      )}
       <div className="workflow-node-heading">
         <span className="workflow-node-icon">
           <Icon size={17} />
@@ -111,15 +143,50 @@ function WorkflowNodeCard({ data, selected }: NodeProps<CardNode>) {
         <strong>{data.label}</strong>
       </div>
       <div className="workflow-node-caption">
-        {isStep(data.stage) ? labels[data.stage] : data.agent}
+        {data.stage === 'agent'
+          ? data.afterRounds
+            ? '辩论结束后汇总'
+            : '每轮发言'
+          : isStep(data.stage)
+            ? labels[data.stage]
+            : data.agent}
+        {data.finalOutput && ' · 最终输出'}
         {data.stage === 'review' && ` · ${data.required ? '必需' : '可选'}`}
         {data.confirm && ' · 手动放行'}
         {data.runStatus && ` · ${runLabels[data.runStatus] ?? data.runStatus}`}
       </div>
-      {!system && <div className="workflow-node-agent">{data.agent}</div>}
+      {!system && (
+        <div className="workflow-node-agent">
+          {data.stage === 'debate' ? `汇总：${data.agent}` : data.agent}
+        </div>
+      )}
+      {data.stage === 'debate' && data.debate && (
+        <>
+          <div className="workflow-debate-meta">
+            {data.debate.participants.length} 位辩手 · {data.debate.rounds} 轮交锋
+          </div>
+          <p className="workflow-node-instructions">
+            {data.debate.participants.map((participant) => participant.name).join(' ↔ ')}
+          </p>
+          <div className="workflow-agent-ports">
+            <span>上游内容</span>
+            <span>汇总结论</span>
+          </div>
+        </>
+      )}
+      {data.stage === 'agent' && data.instructions && (
+        <p className="workflow-node-instructions">{data.instructions}</p>
+      )}
+      {data.stage === 'agent' && (
+        <div className="workflow-agent-ports">
+          <span>输入</span>
+          <span>{data.afterRounds ? '汇总结论' : '发言输出'}</span>
+        </div>
+      )}
       {!['end', 'author'].includes(data.stage) && (
         <Handle
           type="source"
+          id={data.stage === 'agent' ? 'output' : null}
           position={data.stage === 'revise' ? Position.Left : Position.Right}
           isConnectable={!system && data.stage !== 'revise'}
           aria-label={`${data.label} 输出连接点`}
@@ -141,12 +208,53 @@ const runLabels: Record<string, string> = {
   stale: '已被替代',
   cancelled: '已取消',
 };
+function RoundFeedbackEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  markerEnd,
+  selected,
+}: EdgeProps) {
+  // Route feedback beside the Agents instead of drawing through their cards.
+  const laneX = Math.min(sourceX, targetX) - 180 - (sourceY > targetY ? 36 : 0);
+  const path = `M ${sourceX} ${sourceY} L ${sourceX} ${sourceY + 24} L ${laneX} ${sourceY + 24} L ${laneX} ${targetY - 24} L ${targetX} ${targetY - 24} L ${targetX} ${targetY}`;
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={path}
+        {...(markerEnd ? { markerEnd } : {})}
+        style={{
+          stroke: selected ? '#f4ce98' : '#d4a96d',
+          strokeDasharray: '6 4',
+          strokeWidth: selected ? 3 : 2,
+        }}
+      />
+      <EdgeLabelRenderer>
+        <span
+          className="workflow-feedback-label"
+          style={{
+            position: 'absolute',
+            transform: `translate(-50%, -50%) translate(${laneX}px, ${(sourceY + targetY) / 2}px)`,
+            pointerEvents: 'none',
+          }}
+        >
+          下一轮
+        </span>
+      </EdgeLabelRenderer>
+    </>
+  );
+}
+const edgeTypes = { 'round-feedback': RoundFeedbackEdge };
 const nodeTypes = { workflow: WorkflowNodeCard };
 const startId = '__start';
 const endId = '__end';
 const gateId = '__review_gate';
 const authorId = '__author';
 const readableView = { padding: 0.08, minZoom: 0.72, maxZoom: 1 };
+const agentView = { padding: 0.25, minZoom: 0.2, maxZoom: 1 };
 function explicitSteps(steps: Step[]): Step[] {
   const dependencies = workflowDependencies(steps);
   return steps.map((s) => ({ ...s, dependsOn: dependencies.get(s.key) ?? [] }));
@@ -194,16 +302,18 @@ export function WorkflowGraphEditor({
   /** Canvas only: no editing chrome, dragging or connecting. */
   readOnly?: boolean;
 }) {
+  const freeGraph = config.executionMode === 'graph';
+  const viewOptions = freeGraph ? agentView : readableView;
   const [expanded, setExpanded] = useState(false);
   const [flow, setFlow] = useState<ReactFlowInstance<CardNode> | null>(null);
   const [zoom, setZoom] = useState(100);
   useEffect(() => {
     if (!flow) return;
     const frame = requestAnimationFrame(() => {
-      void flow.fitView({ ...readableView, padding: expanded ? 0.12 : 0.08 });
+      void flow.fitView({ ...viewOptions, padding: expanded ? 0.12 : 0.08 });
     });
     return () => cancelAnimationFrame(frame);
-  }, [expanded, flow]);
+  }, [expanded, flow, viewOptions]);
   useEffect(() => {
     if (!expanded) return;
     const close = (event: KeyboardEvent) => {
@@ -212,6 +322,7 @@ export function WorkflowGraphEditor({
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, [expanded]);
+  const [connectionMode, setConnectionMode] = useState<'current' | 'feedback'>('current');
   const [view, setView] = useState<'graph' | 'list'>('graph');
   const [selected, setSelected] = useState<string>('');
   const [selectedEdge, setSelectedEdge] = useState<string>('');
@@ -246,9 +357,44 @@ export function WorkflowGraphEditor({
         required: s.required,
         confirm: s.gate === 'manual',
         ...(runStatus?.[s.key] ? { runStatus: runStatus[s.key] } : {}),
-        agent: versions.find((v) => v.id === s.agentVersionId)?.config.name ?? '请选择 Agent',
+        agent:
+          versions.find((v) => v.id === s.agentVersionId)?.config.name ??
+          (s.stage === 'agent' && readOnly ? s.name : '请选择 Agent'),
+        finalOutput: freeGraph && config.outputNodeKey === s.key,
+        afterRounds: s.runWhen === 'after_rounds',
+        instructions: s.instructions ?? '',
+        debate: s.debate,
       },
     }));
+    if (freeGraph) {
+      setNodes(generatedNodes);
+      setEdges(
+        config.steps.flatMap((step) => [
+          ...step.dependsOn.map((parent) => ({
+            id: `${parent}:${step.key}`,
+            source: parent,
+            target: step.key,
+            sourceHandle: 'output',
+            targetHandle: 'input',
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#9382b2' },
+            type: 'smoothstep',
+            selected: selectedEdge === `${parent}:${step.key}`,
+          })),
+          ...(step.feedbackFrom ?? []).map((parent) => ({
+            id: `round:${parent}:${step.key}`,
+            source: parent,
+            target: step.key,
+            sourceHandle: 'feedback-out',
+            targetHandle: 'feedback-in',
+            type: 'round-feedback',
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#d4a96d' },
+            className: 'workflow-round-edge',
+            selected: selectedEdge === `round:${parent}:${step.key}`,
+          })),
+        ]),
+      );
+      return;
+    }
     const reviewers = content.filter((s) => s.stage === 'review');
     const revise = config.steps.find((s) => s.stage === 'revise');
     const reviewY = reviewers.map((s) => (s.position ?? positions.get(s.key))?.y ?? 80);
@@ -356,18 +502,37 @@ export function WorkflowGraphEditor({
           className: 'workflow-feedback-edge',
         }),
       );
+      const replay = content.filter(
+        (step) =>
+          step.stage === 'review' ||
+          (['debate', 'analysis'].includes(step.stage) &&
+            content.some(
+              (source) =>
+                ['draft', 'generate'].includes(source.stage) &&
+                workflowAncestors(step.key, deps).has(source.key),
+            )),
+      );
+      const replayRoots = replay.filter(
+        (step) => !step.dependsOn.some((key) => replay.some((source) => source.key === key)),
+      );
       if (automatic)
-        for (const [index, review] of reviewers.entries())
+        for (const [index, review] of replayRoots.entries())
           generatedEdges.push(
             systemEdge(`feedback:return:${review.key}`, automatic.key, review.key, {
-              ...(index === 0 ? { label: '修订后全部复审' } : {}),
+              ...(index === 0
+                ? {
+                    label: replay.some((step) => step.stage === 'debate')
+                      ? '修订后重新辩论并复审'
+                      : '修订后全部复审',
+                  }
+                : {}),
               className: 'workflow-feedback-edge',
             }),
           );
     }
     setNodes(generatedNodes);
     setEdges(generatedEdges);
-  }, [config, versions, selected, selectedEdge]);
+  }, [config, versions, selected, selectedEdge, freeGraph, readOnly, runStatus]);
   const update = (key: string, patch: Partial<Step>) =>
     onChange({
       ...config,
@@ -378,14 +543,47 @@ export function WorkflowGraphEditor({
       ...config,
       steps: explicitSteps(config.steps)
         .filter((s) => !keys.includes(s.key))
-        .map((s) => ({ ...s, dependsOn: s.dependsOn?.filter((key) => !keys.includes(key)) })),
+        .map((s) => ({
+          ...s,
+          dependsOn: s.dependsOn?.filter((key) => !keys.includes(key)),
+          feedbackFrom: s.feedbackFrom?.filter((key) => !keys.includes(key)),
+        })),
     });
     setSelected('');
+    setNotice('已移除 Agent 节点及关联连线。');
   };
-  const connect = ({ source, target }: Pick<Connection, 'source' | 'target'>) => {
+  const connect = ({
+    source,
+    target,
+    sourceHandle,
+    targetHandle,
+  }: Pick<Connection, 'source' | 'target'> &
+    Partial<Pick<Connection, 'sourceHandle' | 'targetHandle'>>) => {
     const from = config.steps.find((s) => s.key === source);
     const to = config.steps.find((s) => s.key === target);
     if (!from || !to || from.stage === 'revise' || to.stage === 'revise') return;
+    if (freeGraph) {
+      const feedback =
+        sourceHandle === 'feedback-out' ||
+        targetHandle === 'feedback-in' ||
+        source === target ||
+        workflowAncestors(source, dependencies).has(target);
+      if (
+        (feedback && (from.runWhen === 'after_rounds' || to.runWhen === 'after_rounds')) ||
+        (!feedback && from.runWhen === 'after_rounds' && to.runWhen !== 'after_rounds')
+      ) {
+        setNotice('汇总 Agent 在辩论结束后执行，请用普通连线把辩手接到汇总 Agent。');
+        return;
+      }
+      const field = feedback ? 'feedbackFrom' : 'dependsOn';
+      update(target, { [field]: [...new Set([...(to[field] ?? []), source])] });
+      setNotice(
+        feedback
+          ? '已连接下一轮反馈；第一轮独立发言，后续轮次收到对方上一轮的发言。'
+          : '已连接：下游 Agent 会收到上游本轮的发言。',
+      );
+      return;
+    }
     if (source === target || workflowAncestors(source, dependencies).has(target)) {
       setNotice('不能创建循环连线；修订回路由系统处理。');
       return;
@@ -404,9 +602,14 @@ export function WorkflowGraphEditor({
       steps: explicitSteps(config.steps).map((s) => ({
         ...s,
         dependsOn: s.dependsOn?.filter((key) => !ids.includes(`${key}:${s.key}`)),
+        feedbackFrom: s.feedbackFrom?.filter((key) => !ids.includes(`round:${key}:${s.key}`)),
       })),
     });
   const add = (stage: Step['stage']) => {
+    if (stage === 'debate') {
+      addDebate();
+      return;
+    }
     const key = `step-${crypto.randomUUID().slice(0, 8)}`;
     const capability =
       stage === 'revise' ? (config.taskType === 'chapter_write' ? 'draft' : 'generate') : stage;
@@ -430,188 +633,578 @@ export function WorkflowGraphEditor({
     onChange({ ...config, steps });
     setSelected(key);
   };
-  const form = (step: Step, index: number) => (
-    <fieldset key={step.key}>
-      <legend>{labels[step.stage]}节点</legend>
+  const addDebate = () => {
+    const agents = ['正方 · 提案者', '反方 · 挑战者', '主持 · 汇总者'].map(
+      (name) => versions.find((version) => version.config.name === name) ?? versions[0],
+    );
+    if (!agents[0] || !agents[1] || !agents[2]) {
+      setNotice('请先发布 Agent 角色，再添加辩论节点。');
+      return;
+    }
+    const key = `debate-${crypto.randomUUID().slice(0, 8)}`;
+    const edge = selectedEdge?.split(':');
+    const edgeSource =
+      edge?.length === 2 ? config.steps.find((step) => step.key === edge[0]) : undefined;
+    const edgeTarget = edgeSource ? config.steps.find((step) => step.key === edge?.[1]) : undefined;
+    const source = edgeTarget
+      ? edgeSource
+      : selectedStep?.stage !== 'revise' && selectedStep
+        ? selectedStep
+        : config.steps.filter((step) => ['draft', 'generate'].includes(step.stage)).at(-1);
+    const steps = explicitSteps(config.steps).map((step) => ({
+      ...step,
+      dependsOn:
+        source && (!edgeTarget || step.key === edgeTarget.key)
+          ? step.dependsOn.map((parent) => (parent === source.key ? key : parent))
+          : step.dependsOn,
+    }));
+    steps.push({
+      key,
+      name: '多 Agent 辩论',
+      stage: 'debate',
+      agentVersionId: agents[2].id,
+      required: true,
+      gate: 'auto',
+      dependsOn: source ? [source.key] : [],
+      instructions: '围绕上游方案的可行性、逻辑漏洞与改进方向展开辩论。',
+      debate: {
+        rounds: 3,
+        participants: [
+          {
+            name: '正方 · 提案者',
+            agentVersionId: agents[0].id,
+            instructions: '捍卫方案，提出依据，回应质疑并修正不成立的论点。',
+          },
+          {
+            name: '反方 · 挑战者',
+            agentVersionId: agents[1].id,
+            instructions: '挑战方案的假设、漏洞和风险，提出反例与替代建议。',
+          },
+        ],
+      },
+    });
+    const positions = layout(steps);
+    onChange({
+      ...config,
+      steps: steps.map((step) => ({ ...step, position: positions.get(step.key) })),
+    });
+    setSelected(key);
+    setSelectedEdge('');
+    setNotice(
+      source
+        ? '已插入辩论节点：接收上游内容，汇总后再传给下游。可拖动连线调整位置。'
+        : '已添加辩论节点，可连接生成、审校等节点。',
+    );
+    requestAnimationFrame(() => {
+      void flow?.fitView({ padding: 0.12, minZoom: 0.2, maxZoom: 1 });
+    });
+  };
+  const debateSettings = (step: Step) => {
+    const debate = step.debate;
+    if (!debate) return null;
+    const updateParticipant = (
+      index: number,
+      patch: Partial<(typeof debate.participants)[number]>,
+    ) =>
+      update(step.key, {
+        debate: {
+          ...debate,
+          participants: debate.participants.map((participant, i) =>
+            i === index ? { ...participant, ...patch } : participant,
+          ),
+        },
+      });
+    return (
+      <div className="workflow-debate-settings">
+        <p className="muted">
+          首轮独立发言，后续轮次互读上一轮观点；全部结束后由汇总 Agent 输出结论。
+        </p>
+        <label>
+          辩论议题
+          <textarea
+            aria-label="辩论议题"
+            rows={3}
+            maxLength={8000}
+            value={step.instructions ?? ''}
+            onChange={(event) => update(step.key, { instructions: event.target.value })}
+          />
+        </label>
+        <label>
+          辩论轮数
+          <input
+            aria-label="节点辩论轮数"
+            type="number"
+            min={1}
+            max={20}
+            value={debate.rounds}
+            onChange={(event) =>
+              update(step.key, {
+                debate: {
+                  ...debate,
+                  rounds: Math.max(1, Math.min(20, Math.trunc(Number(event.target.value)) || 1)),
+                },
+              })
+            }
+          />
+        </label>
+        <h4>辩手（{debate.participants.length}）</h4>
+        {debate.participants.map((participant, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: Controlled ordered slots have no local component state or reordering.
+          <div className="workflow-debate-participant" key={`${step.key}-${index}`}>
+            <label>
+              角色名称
+              <input
+                aria-label={`辩手 ${index + 1} 名称`}
+                maxLength={100}
+                value={participant.name}
+                onChange={(event) => updateParticipant(index, { name: event.target.value })}
+              />
+            </label>
+            <label>
+              执行 Agent
+              <select
+                aria-label={`辩手 ${index + 1} Agent`}
+                value={participant.agentVersionId}
+                onChange={(event) =>
+                  updateParticipant(index, { agentVersionId: event.target.value })
+                }
+              >
+                {versions.map((version) => (
+                  <option value={version.id} key={version.id}>
+                    {version.config.name} · v{version.versionNo}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              立场与任务
+              <textarea
+                aria-label={`辩手 ${index + 1} 立场`}
+                rows={2}
+                maxLength={8000}
+                value={participant.instructions}
+                onChange={(event) => updateParticipant(index, { instructions: event.target.value })}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={debate.participants.length <= 2}
+              onClick={() =>
+                update(step.key, {
+                  debate: {
+                    ...debate,
+                    participants: debate.participants.filter((_, i) => i !== index),
+                  },
+                })
+              }
+            >
+              移除辩手 {index + 1}
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          disabled={debate.participants.length >= 8 || !versions.length}
+          onClick={() =>
+            update(step.key, {
+              debate: {
+                ...debate,
+                participants: [
+                  ...debate.participants,
+                  {
+                    name: `辩手 ${debate.participants.length + 1}`,
+                    agentVersionId: versions[0]?.id ?? '',
+                    instructions: '',
+                  },
+                ],
+              },
+            })
+          }
+        >
+          ＋ 添加辩手
+        </button>
+      </div>
+    );
+  };
+  const addAgent = (versionId: string) => {
+    const version = versions.find((item) => item.id === versionId);
+    if (!version) return;
+    const key = `agent-${crypto.randomUUID().slice(0, 8)}`;
+    const step: Step = {
+      key,
+      name: version.config.name,
+      stage: 'agent',
+      agentVersionId: version.id,
+      required: true,
+      gate: 'auto',
+      dependsOn: [],
+      feedbackFrom: [],
+      runWhen: 'each_round',
+      instructions: '',
+      position: {
+        x: 80 + Math.floor(config.steps.length / 2) * 300,
+        y: 60 + (config.steps.length % 2) * 260,
+      },
+    };
+    onChange({
+      ...config,
+      steps: [...config.steps, step],
+      outputNodeKey: config.outputNodeKey ?? key,
+    });
+    setSelected(key);
+    setNotice('Agent 已加入画布，拖动圆点连接其他 Agent。');
+  };
+  const agentForm = (step: Step) => (
+    <fieldset key={step.key} className="workflow-agent-form">
+      <legend>Agent 节点</legend>
       <label>
-        阶段名称
+        节点名称
         <input
-          aria-label="阶段名称"
+          aria-label="节点名称"
           value={step.name}
           maxLength={100}
-          onChange={(e) => update(step.key, { name: e.target.value })}
+          onChange={(event) => update(step.key, { name: event.target.value })}
         />
-      </label>
-      <label>
-        阶段类型
-        <select
-          aria-label="阶段类型"
-          value={step.stage}
-          onChange={(e) => {
-            const stage = e.target.value as Step['stage'];
-            const steps = explicitSteps(config.steps).map((node) =>
-              node.key === step.key
-                ? {
-                    ...node,
-                    stage,
-                    agentVersionId: '',
-                    ...(stage === 'revise' ? { dependsOn: [] } : {}),
-                  }
-                : stage === 'revise'
-                  ? { ...node, dependsOn: node.dependsOn?.filter((key) => key !== step.key) }
-                  : node,
-            );
-            onChange({ ...config, steps });
-          }}
-        >
-          {Object.entries(labels)
-            .filter(([id]) => id !== (config.taskType === 'chapter_write' ? 'generate' : 'draft'))
-            .map(([id, label]) => (
-              <option key={id} value={id}>
-                {label}
-              </option>
-            ))}
-        </select>
       </label>
       <label>
         执行 Agent 版本
         <select
           aria-label="执行 Agent 版本"
           value={step.agentVersionId}
-          onChange={(e) => update(step.key, { agentVersionId: e.target.value })}
+          onChange={(event) => update(step.key, { agentVersionId: event.target.value })}
         >
-          <option value="">请选择能力匹配的已发布 Agent</option>
-          {versions
-            .filter(
-              (v) =>
-                v.config.capability ===
-                (step.stage === 'revise'
-                  ? config.taskType === 'chapter_write'
-                    ? 'draft'
-                    : 'generate'
-                  : step.stage),
+          <option value="">选择已发布 Agent</option>
+          {versions.map((version) => (
+            <option key={version.id} value={version.id}>
+              {version.config.name} · v{version.versionNo}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        本节点任务 / 立场
+        <textarea
+          aria-label="本节点任务 / 立场"
+          rows={4}
+          maxLength={8000}
+          placeholder="例如：站在反方，逐条质疑对方论据，并给出反例。"
+          value={step.instructions ?? ''}
+          onChange={(event) => update(step.key, { instructions: event.target.value })}
+        />
+      </label>
+      <label>
+        参与时机
+        <select
+          aria-label="参与时机"
+          value={step.runWhen ?? 'each_round'}
+          onChange={(event) =>
+            update(step.key, { runWhen: event.target.value as 'each_round' | 'after_rounds' })
+          }
+        >
+          <option value="each_round">每轮发言</option>
+          <option value="after_rounds">辩论结束后汇总</option>
+        </select>
+      </label>
+      <label>
+        放行方式
+        <select
+          aria-label="放行方式"
+          value={step.gate}
+          onChange={(event) => update(step.key, { gate: event.target.value as 'auto' | 'manual' })}
+        >
+          <option value="auto">自动发言</option>
+          <option value="manual">每次发言后等待我放行</option>
+        </select>
+      </label>
+      <button
+        type="button"
+        aria-pressed={config.outputNodeKey === step.key}
+        onClick={() => onChange({ ...config, outputNodeKey: step.key })}
+      >
+        {config.outputNodeKey === step.key ? '当前为最终输出 Agent' : '设为最终输出 Agent'}
+      </button>
+      <h4>收到哪些发言</h4>
+      {step.dependsOn.map((key) => (
+        <div className="workflow-upstream" key={`current:${key}`}>
+          <span>{config.steps.find((source) => source.key === key)?.name} · 本轮</span>
+          <button
+            type="button"
+            aria-label={`移除本轮连线${key}`}
+            onClick={() => disconnect([`${key}:${step.key}`])}
+          >
+            移除
+          </button>
+        </div>
+      ))}
+      {(step.feedbackFrom ?? []).map((key) => (
+        <div className="workflow-upstream" key={`feedback:${key}`}>
+          <span>{config.steps.find((source) => source.key === key)?.name} · 上轮</span>
+          <button
+            type="button"
+            aria-label={`移除反馈连线${key}`}
+            onClick={() => disconnect([`round:${key}:${step.key}`])}
+          >
+            移除
+          </button>
+        </div>
+      ))}
+      {!step.dependsOn.length && !step.feedbackFrom?.length && (
+        <p className="muted fine">独立接收作者任务，连线后再接收其他 Agent 的发言。</p>
+      )}
+      <label>
+        连线类型
+        <select
+          aria-label="连线类型"
+          value={connectionMode}
+          onChange={(event) => {
+            setConnectionMode(event.target.value as 'current' | 'feedback');
+            setParentKey('');
+          }}
+        >
+          <option value="current">本轮发言 → 当前节点</option>
+          <option value="feedback">上一轮发言 → 当前节点</option>
+        </select>
+      </label>
+      <label>
+        添加上游 Agent
+        <select
+          aria-label="添加上游 Agent"
+          value={parentKey}
+          onChange={(event) => setParentKey(event.target.value)}
+        >
+          <option value="">选择 Agent</option>
+          {config.steps
+            .filter((source) =>
+              connectionMode === 'feedback'
+                ? step.runWhen !== 'after_rounds' &&
+                  source.runWhen !== 'after_rounds' &&
+                  !step.feedbackFrom?.includes(source.key)
+                : source.key !== step.key && !step.dependsOn.includes(source.key),
             )
-            .map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.config.name} · v{v.versionNo}
+            .map((source) => (
+              <option key={source.key} value={source.key}>
+                {source.name}
               </option>
             ))}
         </select>
       </label>
-      {step.stage === 'review' && (
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={step.required}
-            onChange={(e) => update(step.key, { required: e.target.checked })}
-          />
-          必须完成此审校
-        </label>
-      )}
-      <label>
-        放行方式
-        <select
-          value={step.gate}
-          onChange={(e) => update(step.key, { gate: e.target.value as 'auto' | 'manual' })}
-        >
-          <option value="auto">自动放行</option>
-          <option value="manual">手动放行（产出后等待作者查看）</option>
-        </select>
-      </label>
-      {step.stage === 'revise' ? (
-        <p className="muted">审校汇总后若有被采纳的意见则触发，修订完成后重新运行全部审校。</p>
-      ) : (
-        <>
-          <h4>上游节点</h4>
-          {(dependencies.get(step.key) ?? []).map((key) => (
-            <div className="workflow-upstream" key={key}>
-              <span>{config.steps.find((s) => s.key === key)?.name ?? key}</span>
-              <button
-                type="button"
-                aria-label={`移除来自${config.steps.find((s) => s.key === key)?.name ?? key}的连线`}
-                onClick={() => disconnect([`${key}:${step.key}`])}
-              >
-                移除连线
-              </button>
-            </div>
-          ))}
-          {!dependencies.get(step.key)?.length && <p className="muted">从开始节点接收创作要求。</p>}
-          <label>
-            添加上游
-            <select
-              aria-label="添加上游节点"
-              value={parentKey}
-              onChange={(e) => setParentKey(e.target.value)}
-            >
-              <option value="">选择节点</option>
-              {config.steps
-                .filter(
-                  (s) =>
-                    s.key !== step.key &&
-                    s.stage !== 'revise' &&
-                    !dependencies.get(step.key)?.includes(s.key) &&
-                    !workflowAncestors(s.key, dependencies).has(step.key),
-                )
-                .map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.name}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            disabled={!parentKey}
-            onClick={() => {
-              connect({ source: parentKey, target: step.key });
-              setParentKey('');
-            }}
-          >
-            连接上游
-          </button>
-        </>
-      )}
+      <button
+        type="button"
+        disabled={!parentKey}
+        onClick={() => {
+          connect({
+            source: parentKey,
+            target: step.key,
+            ...(connectionMode === 'feedback' ? { targetHandle: 'feedback-in' } : {}),
+          });
+          setParentKey('');
+        }}
+      >
+        连接 Agent
+      </button>
       <div className="workflow-actions">
-        {view === 'list' && (
-          <>
-            <button
-              type="button"
-              disabled={index === 0}
-              onClick={() => {
-                const steps = [...config.steps];
-                const prior = steps[index - 1];
-                if (prior) {
-                  steps[index - 1] = step;
-                  steps[index] = prior;
-                  onChange({ ...config, steps });
-                }
-              }}
-            >
-              上移
-            </button>
-            <button
-              type="button"
-              disabled={index === config.steps.length - 1}
-              onClick={() => {
-                const steps = [...config.steps];
-                const next = steps[index + 1];
-                if (next) {
-                  steps[index + 1] = step;
-                  steps[index] = next;
-                  onChange({ ...config, steps });
-                }
-              }}
-            >
-              下移
-            </button>
-          </>
-        )}
         <button type="button" onClick={() => remove([step.key])}>
-          移除阶段
+          移除 Agent 节点
         </button>
       </div>
     </fieldset>
   );
+  const form = (step: Step, index: number) =>
+    step.stage === 'agent' ? (
+      agentForm(step)
+    ) : (
+      <fieldset key={step.key}>
+        <legend>{labels[step.stage]}节点</legend>
+        <label>
+          阶段名称
+          <input
+            aria-label="阶段名称"
+            value={step.name}
+            maxLength={100}
+            onChange={(e) => update(step.key, { name: e.target.value })}
+          />
+        </label>
+        {step.stage !== 'debate' && (
+          <label>
+            阶段类型
+            <select
+              aria-label="阶段类型"
+              value={step.stage}
+              onChange={(e) => {
+                const stage = e.target.value as Step['stage'];
+                const steps = explicitSteps(config.steps).map((node) =>
+                  node.key === step.key
+                    ? {
+                        ...node,
+                        stage,
+                        agentVersionId: '',
+                        ...(stage === 'revise' ? { dependsOn: [] } : {}),
+                      }
+                    : stage === 'revise'
+                      ? { ...node, dependsOn: node.dependsOn?.filter((key) => key !== step.key) }
+                      : node,
+                );
+                onChange({ ...config, steps });
+              }}
+            >
+              {Object.entries(labels)
+                .filter(
+                  ([id]) =>
+                    id !== 'agent' &&
+                    id !== 'debate' &&
+                    id !== (config.taskType === 'chapter_write' ? 'generate' : 'draft'),
+                )
+                .map(([id, label]) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
+        <label>
+          {step.stage === 'debate' ? '汇总 Agent' : '执行 Agent 版本'}
+          <select
+            aria-label={step.stage === 'debate' ? '汇总 Agent' : '执行 Agent 版本'}
+            value={step.agentVersionId}
+            onChange={(e) => update(step.key, { agentVersionId: e.target.value })}
+          >
+            <option value="">请选择能力匹配的已发布 Agent</option>
+            {versions
+              .filter(
+                (v) =>
+                  step.stage === 'debate' ||
+                  v.config.capability ===
+                    (step.stage === 'revise'
+                      ? config.taskType === 'chapter_write'
+                        ? 'draft'
+                        : 'generate'
+                      : step.stage),
+              )
+              .map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.config.name} · v{v.versionNo}
+                </option>
+              ))}
+          </select>
+        </label>
+        {step.stage === 'debate' && debateSettings(step)}
+        {step.stage === 'review' && (
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={step.required}
+              onChange={(e) => update(step.key, { required: e.target.checked })}
+            />
+            必须完成此审校
+          </label>
+        )}
+        <label>
+          放行方式
+          <select
+            value={step.gate}
+            onChange={(e) => update(step.key, { gate: e.target.value as 'auto' | 'manual' })}
+          >
+            <option value="auto">自动放行</option>
+            <option value="manual">手动放行（产出后等待作者查看）</option>
+          </select>
+        </label>
+        {step.stage === 'revise' ? (
+          <p className="muted">审校汇总后若有被采纳的意见则触发，修订完成后重新运行全部审校。</p>
+        ) : (
+          <>
+            <h4>上游节点</h4>
+            {(dependencies.get(step.key) ?? []).map((key) => (
+              <div className="workflow-upstream" key={key}>
+                <span>{config.steps.find((s) => s.key === key)?.name ?? key}</span>
+                <button
+                  type="button"
+                  aria-label={`移除来自${config.steps.find((s) => s.key === key)?.name ?? key}的连线`}
+                  onClick={() => disconnect([`${key}:${step.key}`])}
+                >
+                  移除连线
+                </button>
+              </div>
+            ))}
+            {!dependencies.get(step.key)?.length && (
+              <p className="muted">从开始节点接收创作要求。</p>
+            )}
+            <label>
+              添加上游
+              <select
+                aria-label="添加上游节点"
+                value={parentKey}
+                onChange={(e) => setParentKey(e.target.value)}
+              >
+                <option value="">选择节点</option>
+                {config.steps
+                  .filter(
+                    (s) =>
+                      s.key !== step.key &&
+                      s.stage !== 'revise' &&
+                      !dependencies.get(step.key)?.includes(s.key) &&
+                      !workflowAncestors(s.key, dependencies).has(step.key),
+                  )
+                  .map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={!parentKey}
+              onClick={() => {
+                connect({ source: parentKey, target: step.key });
+                setParentKey('');
+              }}
+            >
+              连接上游
+            </button>
+          </>
+        )}
+        <div className="workflow-actions">
+          {view === 'list' && (
+            <>
+              <button
+                type="button"
+                disabled={index === 0}
+                onClick={() => {
+                  const steps = [...config.steps];
+                  const prior = steps[index - 1];
+                  if (prior) {
+                    steps[index - 1] = step;
+                    steps[index] = prior;
+                    onChange({ ...config, steps });
+                  }
+                }}
+              >
+                上移
+              </button>
+              <button
+                type="button"
+                disabled={index === config.steps.length - 1}
+                onClick={() => {
+                  const steps = [...config.steps];
+                  const next = steps[index + 1];
+                  if (next) {
+                    steps[index + 1] = step;
+                    steps[index] = next;
+                    onChange({ ...config, steps });
+                  }
+                }}
+              >
+                下移
+              </button>
+            </>
+          )}
+          <button type="button" onClick={() => remove([step.key])}>
+            移除阶段
+          </button>
+        </div>
+      </fieldset>
+    );
   if (readOnly)
     return (
       <div className="workflow-graph-editor is-readonly">
@@ -620,9 +1213,10 @@ export function WorkflowGraphEditor({
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             colorMode="dark"
             fitView
-            fitViewOptions={readableView}
+            fitViewOptions={viewOptions}
             onInit={setFlow}
             minZoom={0.2}
             maxZoom={1.6}
@@ -638,7 +1232,9 @@ export function WorkflowGraphEditor({
       </div>
     );
   return (
-    <div className={`workflow-graph-editor ${expanded ? 'is-expanded' : ''}`}>
+    <div
+      className={`workflow-graph-editor ${freeGraph ? 'is-agent-graph' : ''} ${expanded ? 'is-expanded' : ''}`}
+    >
       <div className="workflow-graph-toolbar">
         <div className="workflow-view-switch">
           <button type="button" aria-pressed={view === 'graph'} onClick={() => setView('graph')}>
@@ -665,24 +1261,78 @@ export function WorkflowGraphEditor({
               </button>
             </>
           )}
-          <select
-            aria-label="添加节点类型"
-            value=""
-            disabled={config.steps.length >= 16}
-            onChange={(e) => add(e.target.value as Step['stage'])}
-          >
-            <option value="" disabled>
-              添加节点
-            </option>
-            {Object.entries(labels)
-              .filter(([id]) => id !== (config.taskType === 'chapter_write' ? 'generate' : 'draft'))
-              .map(([id, name]) => (
-                <option value={id} key={id}>
-                  {name}
+          {freeGraph && (
+            <>
+              <label className="workflow-rounds-control">
+                辩论轮数
+                <input
+                  aria-label="辩论轮数"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={config.maxRounds ?? 3}
+                  onChange={(event) =>
+                    onChange({
+                      ...config,
+                      maxRounds: Math.max(
+                        1,
+                        Math.min(20, Math.trunc(Number(event.target.value)) || 1),
+                      ),
+                    })
+                  }
+                />
+              </label>
+              <select
+                aria-label="添加 Agent 节点"
+                value=""
+                disabled={config.steps.length >= 16}
+                onChange={(event) => addAgent(event.target.value)}
+              >
+                <option value="" disabled>
+                  ＋ 添加 Agent 节点
                 </option>
-              ))}
-          </select>
-          {view === 'list' && (
+                {versions.map((version) => (
+                  <option key={version.id} value={version.id}>
+                    {version.config.name} · v{version.versionNo}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+          {!freeGraph && (
+            <button
+              type="button"
+              className="workflow-add-debate"
+              disabled={config.steps.length >= 16}
+              onClick={addDebate}
+            >
+              <MessageSquare size={15} />＋ 多 Agent 辩论
+            </button>
+          )}
+          {!freeGraph && (
+            <select
+              aria-label="添加节点类型"
+              value=""
+              disabled={config.steps.length >= 16}
+              onChange={(e) => add(e.target.value as Step['stage'])}
+            >
+              <option value="" disabled>
+                添加节点
+              </option>
+              {Object.entries(labels)
+                .filter(
+                  ([id]) =>
+                    id !== 'agent' &&
+                    id !== (config.taskType === 'chapter_write' ? 'generate' : 'draft'),
+                )
+                .map(([id, name]) => (
+                  <option value={id} key={id}>
+                    {name}
+                  </option>
+                ))}
+            </select>
+          )}
+          {!freeGraph && view === 'list' && (
             <button
               type="button"
               disabled={config.steps.length >= 16}
@@ -700,7 +1350,7 @@ export function WorkflowGraphEditor({
                 steps: config.steps.map((s) => ({ ...s, position: positions.get(s.key) })),
               });
               requestAnimationFrame(() => {
-                void flow?.fitView(readableView);
+                void flow?.fitView(viewOptions);
               });
             }}
           >
@@ -709,8 +1359,9 @@ export function WorkflowGraphEditor({
         </div>
       </div>
       <p className="workflow-graph-hint">
-        拖动节点排布 · 从右侧圆点连到下个节点的左侧圆点 · 点击节点配置 Agent ·
-        审校分支共用模型队列依次执行
+        {freeGraph
+          ? '每个节点都是 Agent · 左右圆点传递本轮发言 · 上下圆点传递下一轮反馈 · 连成回路自动作为下一轮反馈'
+          : '拖动节点排布 · 从右侧圆点连到下个节点的左侧圆点 · 点击节点配置 Agent · 审校分支共用模型队列依次执行'}
       </p>
       {view === 'graph' ? (
         <div className={`workflow-graph-workspace ${selectedStep ? 'has-inspector' : ''}`}>
@@ -719,9 +1370,10 @@ export function WorkflowGraphEditor({
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               colorMode="dark"
               fitView
-              fitViewOptions={readableView}
+              fitViewOptions={viewOptions}
               onInit={setFlow}
               onMoveEnd={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
               minZoom={0.2}
@@ -770,7 +1422,7 @@ export function WorkflowGraphEditor({
               }}
             >
               <Background gap={20} size={1} />
-              <Controls showInteractive={false} fitViewOptions={readableView} />
+              <Controls showInteractive={false} fitViewOptions={viewOptions} />
               <MiniMap
                 style={{ width: 140, height: 90 }}
                 pannable
@@ -779,15 +1431,40 @@ export function WorkflowGraphEditor({
               />
             </ReactFlow>
             <div className="workflow-canvas-boundaries">
-              <span>
-                <Play size={12} />
-                开始：创作要求与引用资料
-              </span>
-              <span>
-                <SquareCheck size={12} />
-                审校汇总通过后，作者确认候选
-              </span>
+              {freeGraph ? (
+                <>
+                  <span>
+                    <MessageSquare size={12} />
+                    自由 Agent 图 · {config.maxRounds ?? 3} 轮
+                  </span>
+                  <span className="workflow-feedback-legend">虚线：下一轮反馈</span>
+                  <span>
+                    {config.steps.find((step) => step.key === config.outputNodeKey)?.name ??
+                      '请选择节点设置最终输出'}{' '}
+                    · 最终输出
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>
+                    <Play size={12} />
+                    开始：创作要求与引用资料
+                  </span>
+                  <span>
+                    <SquareCheck size={12} />
+                    审校汇总通过后，作者确认候选
+                  </span>
+                </>
+              )}
             </div>
+            {freeGraph && config.steps.length === 0 && (
+              <div className="workflow-empty-canvas">
+                <Bot size={32} />
+                <strong>从一个 Agent 开始</strong>
+                <p>在上方添加 Agent，拖动连线决定谁听谁的发言。</p>
+                <p>用反馈连线让 Agent 在下一轮相互反驳。</p>
+              </div>
+            )}
             {selectedEdge && (
               <button
                 type="button"
@@ -829,7 +1506,7 @@ export function WorkflowGraphEditor({
           className={validationMessage || notice ? 'workflow-graph-invalid' : 'muted'}
           role="status"
         >
-          {notice || validationMessage || '流程配置有效，可保存并发布'}
+          {validationMessage || notice || '流程配置有效，可保存并发布'}
         </span>
       </div>
     </div>

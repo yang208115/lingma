@@ -32,6 +32,7 @@ export function useWorkspaceRoute() {
         const params = new URLSearchParams(latest.current.location.search);
         if (target.documentId) params.set('document', target.documentId);
         else params.delete('document');
+        if (target.documentId || target.view !== 'writing') params.delete('sourcePlan');
         const search = params.size ? `?${params}` : '';
         const url = `/projects/${latest.current.projectId}/${target.view}${search}`;
         if (url !== `${latest.current.location.pathname}${latest.current.location.search}`)

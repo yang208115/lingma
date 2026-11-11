@@ -7,6 +7,7 @@ import {
   jsonSchema,
   relativePathSchema,
 } from './domain.js';
+import { basicInformationBatchProposalSchema } from './elements.js';
 import {
   chapterCreationSchema,
   chapterOutlineCreationSchema,
@@ -39,6 +40,10 @@ const proposalArgs = z.strictObject({
     ),
 });
 export const actionSchemas = {
+  propose_basic_information_batch: {
+    args: basicInformationBatchProposalSchema,
+    result: z.strictObject({ status: z.literal('staged'), count: z.int().nonnegative() }),
+  },
   propose_chapter_creation: {
     args: chapterCreationSchema,
     result: z.strictObject({ proposalId: idSchema, status: z.literal('staged') }),
@@ -119,6 +124,7 @@ export type ActionName = keyof typeof actionSchemas;
 export type ActionArgs<N extends ActionName> = z.infer<(typeof actionSchemas)[N]['args']>;
 export type ActionResult<N extends ActionName> = z.infer<(typeof actionSchemas)[N]['result']>;
 export const actionNameSchema = z.enum([
+  'propose_basic_information_batch',
   'propose_chapter_creation',
   'propose_master_outline',
   'propose_chapter_outlines',
@@ -129,6 +135,11 @@ export const actionNameSchema = z.enum([
   'propose_document_change',
 ]);
 export const actionCallSchema = z.discriminatedUnion('name', [
+  z.strictObject({
+    callId: z.string().min(1),
+    name: z.literal('propose_basic_information_batch'),
+    args: basicInformationBatchProposalSchema,
+  }),
   z.strictObject({
     callId: z.string().min(1),
     name: z.literal('propose_chapter_creation'),
@@ -181,6 +192,8 @@ export const toolErrorSchema = z.strictObject({
 });
 
 export const actionDescriptions: Record<ActionName, string> = {
+  propose_basic_information_batch:
+    '为故事引导对话批量提交基础信息修改候选。一次调用的 items 可同时更新故事定位与主题、世界与场景、多个人物、核心冲突及叙事文风；将本轮新信息影响到的全部条目一起提交，不按分类拆成多轮。只提交有实质变化的条目，保留未修改内容和作者锁定字段。已有条目用当前目录的 targetDocumentId，新条目为 null；同批条目可通过 tempId 互相关联。工具仅提交待审候选，作者采用后才写入故事档案，不直接改正式设定。纯讨论或无变化时不调用。一次对话只提交一个完整批次，成功后回复作者并问一个后续问题。',
   propose_chapter_creation:
     '为当前作品新建正文章节：自行拟标题 title，按作者要求提供 content（只建空章时为空），从 volumes 目录选择 volumeId，或提供 newVolumeTitle 同时新建卷；可用 outlineIds 关联 chapter_outline 事件。无需先有正文或当前目标。提交待作者确认的创建候选，确认后创建正式章节，不覆盖当前正文。新建章节或写新一章时使用本工具；续写、修改当前章使用 propose_document_change。同一次运行不能同时使用这两种写入工具，需另发任务。content 只能填写正文，完成说明留在聊天回复中。不要只在聊天中提供标题或正文代替提交候选。',
   propose_master_outline:

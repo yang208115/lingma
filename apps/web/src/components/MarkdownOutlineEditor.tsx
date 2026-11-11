@@ -4,9 +4,7 @@ import { WritingEditor } from '../editor/WritingEditor.js';
 import { MarkdownContent } from './MarkdownContent.js';
 
 export function MarkdownOutlineEditor(props: ComponentProps<typeof WritingEditor>) {
-  const [mode, setMode] = useState<'preview' | 'edit'>(() =>
-    props.value.trim() ? 'preview' : 'edit',
-  );
+  const [mode, setMode] = useState<'preview' | 'edit'>('edit');
 
   function changeMode(next: typeof mode) {
     if (next === mode) return;

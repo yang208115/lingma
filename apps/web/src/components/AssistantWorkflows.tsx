@@ -9,7 +9,7 @@ import { workflowApi } from '../workflow-api.js';
 
 export const held = (run: WorkflowRun) => !['completed', 'cancelled'].includes(run.status);
 export const statuses: Record<string, string> = {
-  queued: '排队中',
+  queued: '等待开始',
   running: '执行中',
   awaiting_input: '等待处理',
   awaiting_acceptance: '等待采用',
@@ -23,8 +23,8 @@ export const statuses: Record<string, string> = {
   succeeded: '已完成',
   skipped: '已跳过',
   invalidated: '已失效',
-  awaiting_gate: '等待放行',
-  released: '已放行',
+  awaiting_gate: '等待你确认',
+  released: '已完成',
   stale: '已被替代',
 };
 

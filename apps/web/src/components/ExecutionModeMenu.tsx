@@ -15,10 +15,12 @@ export function ExecutionModeMenu({
   templates,
   value,
   onChange,
+  allowDirect = true,
 }: {
   templates: WorkflowTemplate[];
   value: string;
   onChange(value: string): void;
+  allowDirect?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<CSSProperties>({});
@@ -107,7 +109,7 @@ export function ExecutionModeMenu({
       menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [],
     );
     if (!items.length) return;
-    const index = items.findIndex((item) => item === document.activeElement);
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
     const next =
       event.key === 'Home'
         ? 0
@@ -160,33 +162,30 @@ export function ExecutionModeMenu({
             onKeyDown={navigate}
           >
             <div className="execution-mode-menu-heading">执行方式</div>
-            <button
-              type="button"
-              role="menuitemradio"
-              aria-checked={!value}
-              tabIndex={-1}
-              className="execution-mode-option"
-              onClick={() => choose('')}
-            >
-              <span className="execution-mode-icon">
-                <Sparkles size={16} aria-hidden="true" />
-              </span>
-              <span className="execution-mode-option-copy">
-                <strong>直接生成</strong>
-                <small>由当前模型直接完成任务</small>
-              </span>
-              {!value && <Check size={15} className="execution-mode-check" aria-hidden="true" />}
-            </button>
+            {allowDirect && (
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={!value}
+                tabIndex={-1}
+                className="execution-mode-option"
+                onClick={() => choose('')}
+              >
+                <span className="execution-mode-icon">
+                  <Sparkles size={16} aria-hidden="true" />
+                </span>
+                <span className="execution-mode-option-copy">
+                  <strong>直接生成</strong>
+                  <small>由当前模型直接完成任务</small>
+                </span>
+                {!value && <Check size={15} className="execution-mode-check" aria-hidden="true" />}
+              </button>
+            )}
             {Object.entries(workflowTaskLabels).map(([type, groupLabel]) => {
               const versions = choices.filter((version) => version.config.taskType === type);
               if (!versions.length) return null;
               return (
-                <div
-                  role="group"
-                  aria-label={groupLabel}
-                  className="execution-mode-group"
-                  key={type}
-                >
+                <fieldset aria-label={groupLabel} className="execution-mode-group" key={type}>
                   <div className="execution-mode-group-label">{groupLabel}</div>
                   {versions.map((version) => (
                     <button
@@ -210,7 +209,7 @@ export function ExecutionModeMenu({
                       )}
                     </button>
                   ))}
-                </div>
+                </fieldset>
               );
             })}
           </div>,

@@ -34,6 +34,7 @@ import {
   worldbuildingTypes,
 } from './element-presentation.js';
 import { History } from './History.js';
+import { StoryGuide } from './StoryGuide.js';
 
 const statusLabels = {
   draft: '草稿',
@@ -545,6 +546,38 @@ export function ElementPanel({
   const setupStarted = useRef(false);
   const focusedDocument = useRef('');
   const [loaded, setLoaded] = useState(false);
+  const [informationMode, setInformationMode] = useState<'guided' | 'advanced'>('guided');
+  const modeInitialized = useRef(false);
+  const guided = !planning && informationMode === 'guided';
+  useEffect(() => {
+    if (!loaded || modeInitialized.current || planning) return;
+    modeInitialized.current = true;
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(`lingma:information-mode:${projectId}`);
+    } catch {
+      /* Optional preference. */
+    }
+    setInformationMode(
+      initialDocumentId ||
+        saved === 'advanced' ||
+        (!saved && entries.some(hasElementContent) && !jobs.some((job) => job.input.guided))
+        ? 'advanced'
+        : 'guided',
+    );
+  }, [loaded, planning, projectId, entries, jobs, initialDocumentId]);
+  function switchInformationMode(next: 'guided' | 'advanced') {
+    if (dirty) {
+      setError('请先保存当前修改，再切换模式');
+      return;
+    }
+    setInformationMode(next);
+    try {
+      localStorage.setItem(`lingma:information-mode:${projectId}`, next);
+    } catch {
+      /* Optional preference. */
+    }
+  }
   const entry = entries.find(
     (e) => e.document.id === selected && (kind === 'overview' || e.document.kind === kind),
   );
@@ -630,6 +663,7 @@ export function ElementPanel({
     );
     if (!target) return;
     focusedDocument.current = initialDocumentId;
+    setInformationMode('advanced');
     setKind(target.document.kind as ElementKind);
     setSelected(target.document.id);
     setCandidateId('');
@@ -1074,9 +1108,78 @@ export function ElementPanel({
     setChecked([]);
     setJobId('');
   }
+  async function sendGuide(text: string) {
+    await run(async () => {
+      if (dirty) throw new Error('请先保存高级模式中的修改，再继续对话');
+      const provider = providers.find((item) => item.id === providerId);
+      if (!provider) {
+        onModels();
+        throw new Error('请先配置可用模型，你的故事想法会保留');
+      }
+      await beforeOperation();
+      const input = singleElementGenerationInputSchema.parse({
+        providerConfigId: provider.id,
+        modelId: provider.config.modelId,
+        kinds: ['story_premise'],
+        mode: 'replace',
+        guided: true,
+        idea: text,
+        useDrafts: true,
+      });
+      const preview = await elementApi.preview(projectId, input);
+      const created = await elementApi.start(
+        projectId,
+        { ...input, expectedHash: preview.hash },
+        crypto.randomUUID(),
+      );
+      setJobs((old) => [created, ...old.filter((item) => item.id !== created.id)]);
+    });
+  }
+  async function decideGuide(
+    guideJob: ElementGeneration,
+    items: ElementCandidate[],
+    action: 'accept' | 'reject',
+  ) {
+    if (dirty) throw new Error('请先保存当前修改，再处理建议');
+    await beforeOperation();
+    const signature = JSON.stringify([
+      guideJob.id,
+      action,
+      items.map((item) => [item.id, item.revision]),
+    ]);
+    if (!decisionKeys.current.has(signature))
+      decisionKeys.current.set(signature, crypto.randomUUID());
+    try {
+      await elementApi.decide(
+        guideJob.id,
+        action,
+        items,
+        decisionKeys.current.get(signature) as string,
+      );
+    } finally {
+      await reload();
+    }
+    await onChanged();
+  }
+  async function retryGuide(guideJob: ElementGeneration) {
+    if (dirty) throw new Error('请先保存当前修改，再重试这条消息');
+    await beforeOperation();
+    const signature = JSON.stringify(['guide-retry', guideJob.id, guideJob.lastEventSeq]);
+    if (!decisionKeys.current.has(signature))
+      decisionKeys.current.set(signature, crypto.randomUUID());
+    try {
+      const result = await elementApi.retry(
+        guideJob.id,
+        decisionKeys.current.get(signature) as string,
+      );
+      setJobs((old) => old.map((job) => (job.id === result.id ? result : job)));
+    } finally {
+      await reload();
+    }
+  }
   return (
     <section
-      className={`element-panel element-focused-panel${assistantOpen ? ' has-assistant' : ''}`}
+      className={`element-panel element-focused-panel${assistantOpen && !guided ? ' has-assistant' : ''}`}
       aria-label={planning ? '伏笔与悬念管理' : '基本信息管理'}
       hidden={!active}
     >
@@ -1087,10 +1190,32 @@ export function ElementPanel({
           <p className="muted">
             {planning
               ? '安排埋设、关联事件与章节，跟踪回收进度。'
-              : '设定作品、人物与世界，剧情发展在大纲中统一规划。'}
+              : guided
+                ? '从一句想法开始，和 AI 一起慢慢补全你的故事。'
+                : '设定作品、人物与世界，剧情发展在大纲中统一规划。'}
           </p>
         </div>
         <div className="row element-header-actions">
+          {!planning && (
+            <fieldset className="information-mode-switch" aria-label="基本信息模式">
+              <button
+                type="button"
+                aria-pressed={guided}
+                disabled={busy || dirty}
+                onClick={() => switchInformationMode('guided')}
+              >
+                引导模式
+              </button>
+              <button
+                type="button"
+                aria-pressed={!guided}
+                disabled={busy || dirty}
+                onClick={() => switchInformationMode('advanced')}
+              >
+                高级模式
+              </button>
+            </fieldset>
+          )}
           {onOpenOutline && (
             <button
               type="button"
@@ -1109,7 +1234,7 @@ export function ElementPanel({
               {planning ? '返回故事大纲' : '规划故事大纲'}
             </button>
           )}
-          <details className="element-create-menu">
+          <details className="element-create-menu" hidden={guided}>
             <summary>
               <Plus size={14} aria-hidden="true" />
               {planning ? '新增伏笔' : '添加设定'}
@@ -1133,6 +1258,7 @@ export function ElementPanel({
           </details>
           <button
             type="button"
+            hidden={guided}
             aria-expanded={assistantOpen}
             aria-controls="element-ai-assistant"
             onClick={() => setAssistantOpen((old) => !old)}
@@ -1142,7 +1268,7 @@ export function ElementPanel({
           </button>
         </div>
       </header>
-      {onboarding && (
+      {onboarding && !guided && (
         <section className="element-onboarding" aria-label="长篇要素引导">
           <div className="element-onboarding-copy">
             <div className="element-onboarding-heading">
@@ -1225,7 +1351,32 @@ export function ElementPanel({
           </button>
         </div>
       )}
-      <div className="element-layout element-focused-layout">
+      {!planning && loaded && (
+        <div className="story-guide-container" hidden={!guided}>
+          <StoryGuide
+            projectId={projectId}
+            entries={entries}
+            jobs={jobs}
+            providers={providers}
+            providerId={providerId}
+            busy={busy}
+            onProvider={setProviderId}
+            onModels={onModels}
+            onSend={sendGuide}
+            onRetry={(guideJob) => act(() => retryGuide(guideJob))}
+            onDecide={(guideJob, item, action) => act(() => decideGuide(guideJob, item, action))}
+            onEdit={(item) => {
+              switchInformationMode('advanced');
+              reviewCandidate(item);
+            }}
+            onOpenEntry={(item) => {
+              switchInformationMode('advanced');
+              choose(item.document.id, item.document.kind as ElementKind);
+            }}
+          />
+        </div>
+      )}
+      <div className="element-layout element-focused-layout" hidden={guided}>
         <div className="element-navigation">
           <nav className="element-nav" aria-label="要素分类">
             <button
@@ -1697,11 +1848,7 @@ export function ElementPanel({
                   />
                 </div>
                 {basicWorkflow && (
-                  <div
-                    className="element-workflow-scope"
-                    role="group"
-                    aria-label="基础信息编排范围"
-                  >
+                  <fieldset className="element-workflow-scope" aria-label="基础信息编排范围">
                     <button
                       type="button"
                       aria-pressed={workflowScope === 'all'}
@@ -1722,7 +1869,7 @@ export function ElementPanel({
                         ? '统一完善主题、世界、人物、核心冲突和文风，审校后按分类采用。'
                         : '复用同一套编排，只完善当前分类或条目。'}
                     </p>
-                  </div>
+                  </fieldset>
                 )}
                 {informationWorkflows.error && <p role="alert">{informationWorkflows.error}</p>}
               </>

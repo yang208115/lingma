@@ -2,11 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { FakeModelAdapter, type ModelEvent, type ModelRequest } from '@lingma/agent';
+import {
+  FakeModelAdapter,
+  type ModelAdapter,
+  type ModelEvent,
+  type ModelRequest,
+} from '@lingma/agent';
 import {
   createDocumentSchema,
   type ElementGeneration,
   type ElementKind,
+  elementCandidatePayloadSchema,
   elementDataSchema,
   elementGenerationInputSchema,
   elementKinds,
@@ -39,6 +45,23 @@ function response(text: string): ModelEvent {
     },
   };
 }
+function proposeBatch(items: unknown[]): ModelEvent {
+  const call = {
+    id: randomUUID(),
+    name: 'propose_basic_information_batch',
+    arguments: JSON.parse(JSON.stringify({ items })),
+  };
+  return {
+    type: 'response',
+    response: {
+      text: '',
+      calls: [call],
+      stop: 'tool_calls',
+      transcriptMessage: { role: 'assistant', content: '', toolCalls: [call] },
+      usage: { inputTokens: 10, outputTokens: 20, cost: null },
+    },
+  };
+}
 type Task = {
   expectedShape: {
     items: {
@@ -62,7 +85,18 @@ function output(request: ModelRequest) {
   const task = JSON.parse(
     String(request.messages.find((message) => message.role === 'user')?.content),
   ) as Task;
-  const item = task.expectedShape.items[0];
+  const item =
+    task.expectedShape.items?.[0] ??
+    elementCandidatePayloadSchema.parse({
+      tempId: 'story_premise_1',
+      kind: 'story_premise',
+      title: '名称',
+      content: '补充说明',
+      targetDocumentId: null,
+      data: {},
+      reason: '生成理由',
+      openQuestions: [],
+    });
   if (!item) throw new Error('missing stage contract');
   const kind = item.kind;
   item.title = `${kind}设定`;
@@ -84,7 +118,10 @@ function output(request: ModelRequest) {
   }
   return JSON.stringify({ items: [item] });
 }
-async function fixture(respond: (request: ModelRequest) => string = output) {
+async function fixture(
+  respond: (request: ModelRequest) => string = output,
+  factory?: (request: ModelRequest) => ModelAdapter,
+) {
   const root = await mkdtemp(resolve(tmpdir(), 'lingma-elements-'));
   const runtime = await openRuntime(loadConfig({ DATA_DIR: 'data' }, root));
   const novels = new NovelService(runtime.db),
@@ -97,7 +134,7 @@ async function fixture(respond: (request: ModelRequest) => string = output) {
     env: {},
     adapterFactory: (request) => {
       requests.push(request);
-      return new FakeModelAdapter([[response(respond(request))]]);
+      return factory?.(request) ?? new FakeModelAdapter([[response(respond(request))]]);
     },
   });
   const provider = writing.providers.save(
@@ -585,4 +622,601 @@ it('cancels queued model work and resumes explicitly without replaying completed
   expect(f.service.cancel(next.id).status).toBe('cancelled');
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(f.service.get(next.id).candidates).toHaveLength(0);
+});
+
+it('persists guided conversations, keeps suggestions pending and reads advanced edits on the next turn', async () => {
+  const f = await fixture((request) => {
+    const task = JSON.parse(
+      String(request.messages.find((message) => message.role === 'user')?.content),
+    );
+    const item = JSON.parse(output(request)).items[0];
+    item.title = '失踪的钟表匠';
+    item.data.fields = { genre: '悬疑冒险', premise: task.idea };
+    const existing = task.elementContext.find(
+      (group: { kind: string }) => group.kind === 'story_premise',
+    )?.items[0];
+    item.targetDocumentId = existing?.documentId ?? null;
+    return JSON.stringify({
+      items: [item],
+      guidance: {
+        reply: '这是一个寻找亲人的悬疑冒险故事。成长主题是我的建议。',
+        question: '你希望故事偏甜蜜日常，还是暗恋的酸涩？',
+      },
+    });
+  });
+  const input = {
+    ...f.input,
+    guided: true,
+    kinds: ['story_premise' as const],
+    mode: 'replace' as const,
+    idea: '一名钟表匠在海边小镇寻找失踪的姐姐',
+  };
+  const first = await f.service.createGeneration(f.project.id, input, randomUUID());
+  const result = await f.settled(first.id);
+  expect(result.status).toBe('completed');
+  expect(result.guidance?.question).toContain('甜蜜日常');
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+  expect(f.service.jobs(f.project.id)[0]?.guidance).toEqual(result.guidance);
+  const candidate = result.candidates[0];
+  if (!candidate) throw new Error('missing suggestion');
+  f.service.decide(
+    result.id,
+    { action: 'accept', candidates: [{ id: candidate.id, revision: candidate.revision }] },
+    randomUUID(),
+  );
+  const entry = f.service.list(f.project.id)[0];
+  if (!entry) throw new Error('missing accepted entry');
+  f.service.save(entry.document.id, {
+    baseVersionId: entry.version.id,
+    title: entry.document.title,
+    content: '高级模式补充：大学社团相识',
+    data: { ...entry.data, locked: ['fields.genre'] },
+  });
+  const second = await f.service.createGeneration(
+    f.project.id,
+    { ...input, idea: '更喜欢甜蜜日常' },
+    randomUUID(),
+  );
+  const next = await f.settled(second.id);
+  expect(next.status).toBe('completed');
+  expect(next.candidates[0]?.targetDocumentId).toBe(entry.document.id);
+  expect(next.candidates[0]?.data.fields.genre).toBe('悬疑冒险');
+  const task = JSON.parse(
+    String(f.requests.at(-1)?.messages.find((message) => message.role === 'user')?.content),
+  );
+  expect(task.conversation).toHaveLength(1);
+  expect(task.conversation[0].suggestions[0].status).toBe('accepted');
+  expect(task.elementContext[0].items[0].content).toContain('大学社团相识');
+  expect(task.expectedShape.guidance).toBeDefined();
+});
+
+it('allows discussion without candidates and rejects guided proposals outside basic information', async () => {
+  let invalid = false;
+  const f = await fixture((request) => {
+    const item = JSON.parse(output(request)).items[0];
+    item.kind = 'master_outline';
+    item.data.fields = {};
+    return JSON.stringify({
+      items: invalid ? [item] : [],
+      guidance: { reply: '我们可以先聊聊人物。', question: '她们是如何认识的？' },
+    });
+  });
+  const input = {
+    ...f.input,
+    guided: true,
+    kinds: ['story_premise' as const],
+    mode: 'replace' as const,
+  };
+  const discussion = await f.service.createGeneration(f.project.id, input, randomUUID());
+  expect((await f.settled(discussion.id)).guidance?.question).toBe('她们是如何认识的？');
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+  invalid = true;
+  const bad = await f.service.createGeneration(f.project.id, input, randomUUID());
+  const failed = await f.settled(bad.id);
+  expect(failed.status).toBe('failed');
+  expect(failed.error).toContain('授权分类');
+  expect(failed.candidates).toHaveLength(0);
+});
+
+it('can regenerate one guided suggestion without losing permission to edit other categories', async () => {
+  const f = await fixture((request) => {
+    const task = JSON.parse(
+      String(request.messages.find((message) => message.role === 'user')?.content),
+    );
+    const sample = JSON.parse(output(request)).items[0];
+    const items = task.regenerateCandidate
+      ? [{ ...sample, ...task.regenerateCandidate }]
+      : [
+          sample,
+          {
+            ...sample,
+            tempId: 'character_1',
+            kind: 'character',
+            title: '林舟',
+            data: elementDataSchema.parse({ fields: { role: '主角' } }),
+          },
+        ];
+    return JSON.stringify({
+      items,
+      guidance: { reply: '先整理两条建议。', question: '她们如何相识？' },
+    });
+  });
+  const created = await f.service.createGeneration(
+    f.project.id,
+    { ...f.input, guided: true, kinds: ['story_premise'], mode: 'replace' },
+    randomUUID(),
+  );
+  const original = await f.settled(created.id);
+  const character = original.candidates.find((candidate) => candidate.kind === 'character');
+  if (!character) throw new Error('missing character');
+  const updated = await f.settled(
+    (await f.service.regenerateCandidate(character.id, character.revision, randomUUID())).id,
+  );
+  expect(updated.status).toBe('completed');
+  expect(updated.candidates).toHaveLength(2);
+  const premise = updated.candidates.find((candidate) => candidate.kind === 'story_premise');
+  if (!premise) throw new Error('missing premise');
+  const { tempId, kind, title, targetDocumentId, content, data, reason, openQuestions } = premise;
+  expect(() =>
+    f.service.editCandidate(premise.id, premise.revision, {
+      tempId,
+      kind,
+      title,
+      targetDocumentId,
+      content,
+      data,
+      reason,
+      openQuestions,
+    }),
+  ).not.toThrow();
+  expect(updated.guidance).not.toBeNull();
+});
+
+it('validates mutual links across a whole guided batch and adopts both characters atomically', async () => {
+  const f = await fixture((request) => {
+    const sample = JSON.parse(output(request)).items[0];
+    return JSON.stringify({
+      items: ['character_alpha', 'character_beta'].map((tempId, index, ids) => ({
+        ...sample,
+        tempId,
+        kind: 'character',
+        title: index ? '角色乙' : '角色甲',
+        data: elementDataSchema.parse({
+          fields: { role: '主角' },
+          links: [{ targetId: ids[1 - index], label: '互相信任', nature: 'planned' }],
+        }),
+      })),
+      guidance: { reply: '整理了两位互相信任的主角。', question: '他们如何相识？' },
+    });
+  });
+  const job = await f.service.createGeneration(
+    f.project.id,
+    { ...f.input, guided: true, kinds: ['story_premise'], mode: 'replace' },
+    randomUUID(),
+  );
+  const result = await f.settled(job.id);
+  expect(result.status).toBe('completed');
+  expect(result.callCount).toBe(1);
+  expect(result.candidates).toHaveLength(2);
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+  const first = result.candidates[0];
+  if (!first) throw new Error('missing first character');
+  expect(() =>
+    f.service.decide(
+      job.id,
+      { action: 'accept', candidates: [{ id: first.id, revision: first.revision }] },
+      randomUUID(),
+    ),
+  ).toThrow('一并选择依赖');
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+  f.service.decide(
+    job.id,
+    {
+      action: 'accept',
+      candidates: result.candidates.map(({ id, revision }) => ({ id, revision })),
+    },
+    randomUUID(),
+  );
+  const entries = f.service.list(f.project.id);
+  expect(entries).toHaveLength(2);
+  for (const entry of entries) {
+    expect(entry.status).toBe('confirmed');
+    expect(entry.data.links[0]?.targetId).toBe(
+      entries.find((other) => other.document.id !== entry.document.id)?.document.id,
+    );
+  }
+});
+
+it('still rejects nonexistent link targets in a guided batch', async () => {
+  const f = await fixture((request) => {
+    const sample = JSON.parse(output(request)).items[0];
+    sample.data.links = [{ targetId: 'missing_character', label: '认识', nature: 'planned' }];
+    return JSON.stringify({
+      items: [sample],
+      guidance: { reply: '整理设定建议。', question: '接下来想聊什么？' },
+    });
+  });
+  const job = await f.service.createGeneration(
+    f.project.id,
+    { ...f.input, guided: true, kinds: ['story_premise'], mode: 'replace' },
+    randomUUID(),
+  );
+  const result = await f.settled(job.id);
+  expect(result.status).toBe('failed');
+  expect(result.error).toContain('missing_character');
+  expect(result.candidates).toHaveLength(0);
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+});
+
+it('retries a guided turn in place with preceding conversation, fresh settings and a new repair allowance', async () => {
+  let targetCalls = 0;
+  let retrying = false;
+  const f = await fixture((request) => {
+    const task = JSON.parse(
+      String(request.messages.find((message) => message.role === 'user')?.content),
+    );
+    if (task.idea === '补全人物性格') {
+      targetCalls++;
+      if (!retrying || targetCalls === 3) return 'not json';
+    }
+    return JSON.stringify({
+      items: [],
+      guidance: { reply: `回应：${task.idea}`, question: '接下来想聊什么？' },
+    });
+  });
+  const input = {
+    ...f.input,
+    guided: true,
+    kinds: ['story_premise' as const],
+    mode: 'replace' as const,
+  };
+  const world = f.service.create(f.project.id, {
+    kind: 'worldbuilding',
+    title: '故事背景',
+    content: '旧设定',
+  });
+  const before = await f.service.createGeneration(
+    f.project.id,
+    { ...input, idea: '之前的故事想法' },
+    randomUUID(),
+  );
+  await f.settled(before.id);
+  const failed = await f.service.createGeneration(
+    f.project.id,
+    { ...input, idea: '补全人物性格' },
+    randomUUID(),
+  );
+  expect((await f.settled(failed.id)).status).toBe('failed');
+  const after = await f.service.createGeneration(
+    f.project.id,
+    { ...input, idea: '后来的讨论，不应带入旧消息重试' },
+    randomUUID(),
+  );
+  await f.settled(after.id);
+  const other = f.novels.createProject('其他作品');
+  const otherJob = await f.service.createGeneration(
+    other.id,
+    { ...input, idea: '其他作品的消息' },
+    randomUUID(),
+  );
+  await f.settled(otherJob.id);
+  const latest = f.service.save(world.document.id, {
+    baseVersionId: world.version.id,
+    title: world.document.title,
+    content: '高级模式刚修改的新设定',
+    data: { ...world.data, fields: { era: '近未来' }, locked: ['fields.era'] },
+  });
+  retrying = true;
+  const key = randomUUID();
+  const retried = await f.service.retry(failed.id, key);
+  expect(retried.id).toBe(failed.id);
+  const result = await f.settled(retried.id);
+  expect(result.status).toBe('completed');
+  expect(result.callCount).toBe(4);
+  expect(result.createdAt).toBe(failed.createdAt);
+  expect(result.input.idea).toBe('补全人物性格');
+  const task = JSON.parse(
+    String(f.requests.at(-1)?.messages.find((message) => message.role === 'user')?.content),
+  );
+  expect(task.idea).toBe('补全人物性格');
+  expect(task.conversation.map((turn: { author: string }) => turn.author)).toEqual([
+    '之前的故事想法',
+  ]);
+  expect(task.conversation[0].assistant.reply).toBe('回应：之前的故事想法');
+  const setting = task.elementContext.find(
+    (group: { kind: string }) => group.kind === 'worldbuilding',
+  ).items[0];
+  expect(setting.versionId).toBe(latest.version.id);
+  expect(setting.content).toBe('高级模式刚修改的新设定');
+  expect(setting.metadata.element.locked).toEqual(['fields.era']);
+  expect(task.repair).toBeTruthy();
+  expect(f.service.jobs(f.project.id)).toHaveLength(3);
+  const calls = f.requests.length;
+  expect((await f.service.retry(failed.id, key)).status).toBe('completed');
+  expect(f.requests).toHaveLength(calls);
+});
+
+it('allows another guided retry after the previous retry also fails', async () => {
+  let valid = false;
+  const f = await fixture(() =>
+    valid
+      ? JSON.stringify({
+          items: [],
+          guidance: { reply: '现在可以继续讨论了。', question: '接下来聊什么？' },
+        })
+      : 'invalid json',
+  );
+  const created = await f.service.createGeneration(
+    f.project.id,
+    { ...f.input, guided: true, kinds: ['story_premise'], mode: 'replace', maxCalls: 20 },
+    randomUUID(),
+  );
+  expect((await f.settled(created.id)).status).toBe('failed');
+  expect((await f.settled((await f.service.retry(created.id, randomUUID())).id)).status).toBe(
+    'failed',
+  );
+  valid = true;
+  const result = await f.settled((await f.service.retry(created.id, randomUUID())).id);
+  expect(result.status).toBe('completed');
+  expect(result.callCount).toBe(5);
+  expect(f.service.jobs(f.project.id)).toHaveLength(1);
+});
+
+it('keeps guided setting text clean without removing meaningful suggestions or author edits', async () => {
+  const f = await fixture((request) => {
+    const item = JSON.parse(output(request)).items[0];
+    item.title = '钟表匠的故事（建议）';
+    item.content = '寻找失踪的亲人【AI 建议】';
+    item.reason = '（AI建议）作者给出题材，本轮补充主题。';
+    item.data.summary = '海边小镇的故事 (建议)';
+    item.data.fields = {
+      genre: '悬疑（建议）',
+      premise: '（AI建议）钟表匠寻找失踪的姐姐',
+      theme: '她常建议朋友先听完对方的解释。',
+    };
+    return JSON.stringify({
+      items: [item],
+      guidance: { reply: '我整理了这个故事的起点。', question: '她最后出现在哪里？' },
+    });
+  });
+  const job = await f.service.createGeneration(
+    f.project.id,
+    { ...f.input, guided: true, kinds: ['story_premise'], mode: 'replace' },
+    randomUUID(),
+  );
+  const result = await f.settled(job.id);
+  expect(result.status).toBe('completed');
+  const candidate = result.candidates[0];
+  if (!candidate) throw new Error('missing candidate');
+  expect(candidate.title).toBe('钟表匠的故事');
+  expect(candidate.content).toBe('寻找失踪的亲人');
+  expect(candidate.data.summary).toBe('海边小镇的故事');
+  expect(candidate.reason).toBe('作者给出题材，本轮补充主题。');
+  expect(candidate.data.fields).toEqual({
+    genre: '悬疑',
+    premise: '钟表匠寻找失踪的姐姐',
+    theme: '她常建议朋友先听完对方的解释。',
+  });
+  const { tempId, kind, title, targetDocumentId, content, data, reason, openQuestions } = candidate;
+  const edited = f.service.editCandidate(candidate.id, candidate.revision, {
+    tempId,
+    kind,
+    title,
+    targetDocumentId,
+    content,
+    data: { ...data, fields: { ...data.fields, genre: '作者手动标注（建议）' } },
+    reason,
+    openQuestions,
+  });
+  expect(edited?.data.fields.genre).toBe('作者手动标注（建议）');
+});
+
+it('uses one real tool call to propose cross-category updates with complete context and atomic adoption', async () => {
+  const f = await fixture(output, (request) => {
+    expect(request.toolDefinitions).toHaveLength(1);
+    expect(request.toolDefinitions[0]).toMatchObject({ name: 'propose_basic_information_batch' });
+    const task = JSON.parse(
+      String(request.messages.find((message) => message.role === 'user')?.content),
+    );
+    expect(task.targetCount).toBeUndefined();
+    expect(task.expectedShape.items).toBeUndefined();
+    expect(
+      task.existing.map((entry: { document: { kind: string } }) => entry.document.kind).sort(),
+    ).toEqual(['character', 'core_conflict', 'story_premise', 'worldbuilding']);
+    const items = f.service
+      .list(f.project.id)
+      .filter((entry) => entry.document.kind !== 'worldbuilding')
+      .map((entry) =>
+        elementCandidatePayloadSchema.parse({
+          tempId: entry.document.kind,
+          kind: entry.document.kind,
+          targetDocumentId: entry.document.id,
+          title: entry.document.title,
+          content: `${entry.version.content}，共同面对危机，结局圆满`,
+          data: {
+            ...entry.data,
+            locked: [],
+            fields: {
+              ...entry.data.fields,
+              ...(entry.document.kind === 'story_premise'
+                ? { genre: '不应覆盖锁定题材', theme: '共同成长' }
+                : entry.document.kind === 'character'
+                  ? { goal: '主动与同伴一起解决危机' }
+                  : { choice: '携手化解危机，迎来圆满结局' }),
+            },
+          },
+          reason: '同步落实作者确定的结局方向',
+          openQuestions: [],
+        }),
+      );
+    return new FakeModelAdapter([
+      [proposeBatch(items)],
+      [
+        response(
+          JSON.stringify({
+            items: [], // The final reply must not erase the successfully submitted batch.
+            guidance: {
+              reply: '已整理定位、人物与冲突的同步修改，等待你采用。',
+              question: '危机从哪里开始？',
+            },
+          }),
+        ),
+      ],
+    ]);
+  });
+  const premise = f.service.create(f.project.id, {
+    kind: 'story_premise',
+    title: '故事定位',
+    content: '关于彼此信任',
+    data: { fields: { genre: '校园恋爱', emotion: '温暖' }, locked: ['fields.genre'] },
+  });
+  const character = f.service.create(f.project.id, {
+    kind: 'character',
+    title: '林舟',
+    content: '安静而细心',
+    data: { fields: { identity: '高中生' } },
+  });
+  const conflict = f.service.create(f.project.id, {
+    kind: 'core_conflict',
+    title: '信任的考验',
+    content: '两人受到外界压力',
+  });
+  const unrelated = f.service.create(f.project.id, {
+    kind: 'worldbuilding',
+    title: '海边校园',
+    content: '校园靠近海边',
+  });
+  const job = await f.service.createGeneration(
+    f.project.id,
+    {
+      ...f.input,
+      guided: true,
+      kinds: ['story_premise'],
+      mode: 'replace',
+      idea: '要一起化解危机，结局圆满',
+    },
+    randomUUID(),
+  );
+  const result = await f.settled(job.id);
+  expect(result.status).toBe('completed');
+  expect(result.callCount).toBe(2);
+  expect(result.candidates).toHaveLength(3);
+  expect(result.candidates.every((candidate) => candidate.status === 'pending')).toBe(true);
+  expect(
+    result.candidates.find((candidate) => candidate.kind === 'story_premise')?.data.fields,
+  ).toMatchObject({ genre: '校园恋爱', emotion: '温暖', theme: '共同成长' });
+  for (const entry of [premise, character, conflict, unrelated])
+    expect(f.service.entry(entry.document.id).version.id).toBe(entry.version.id);
+  f.service.decide(
+    result.id,
+    {
+      action: 'accept',
+      candidates: result.candidates.map(({ id, revision }) => ({ id, revision })),
+    },
+    randomUUID(),
+  );
+  for (const entry of [premise, character, conflict]) {
+    const updated = f.service.entry(entry.document.id);
+    expect(updated.version.id).not.toBe(entry.version.id);
+    expect(updated.status).toBe('confirmed');
+    expect(updated.version.content).toContain('结局圆满');
+  }
+  expect(f.service.entry(unrelated.document.id).version.id).toBe(unrelated.version.id);
+  expect(f.runtime.db.connection.pragma('foreign_key_check')).toEqual([]);
+});
+
+it('rejects invalid batches without partial proposals, allows correction and prevents duplicate submissions', async () => {
+  const f = await fixture(output, () => {
+    const first = elementCandidatePayloadSchema.parse({
+      tempId: 'character_a',
+      kind: 'character',
+      title: '甲',
+      targetDocumentId: null,
+      content: '信任同伴',
+      data: { links: [{ targetId: 'character_b', label: '同伴', nature: 'planned' }] },
+      reason: '作者指定',
+      openQuestions: [],
+    });
+    const second = {
+      ...first,
+      tempId: 'character_b',
+      title: '乙',
+      data: elementDataSchema.parse({}),
+    };
+    const invalid = { ...second, targetDocumentId: randomUUID() };
+    return new FakeModelAdapter([
+      [proposeBatch([first, invalid])],
+      [proposeBatch([first, second])],
+      [proposeBatch([first, second])],
+      [
+        response(
+          JSON.stringify({
+            guidance: { reply: '两位人物已一起整理。', question: '她们在哪里认识？' },
+          }),
+        ),
+      ],
+    ]);
+  });
+  const job = await f.service.createGeneration(
+    f.project.id,
+    {
+      ...f.input,
+      guided: true,
+      kinds: ['story_premise'],
+      mode: 'replace',
+    },
+    randomUUID(),
+  );
+  const result = await f.settled(job.id);
+  expect(result.status).toBe('completed');
+  expect(result.callCount).toBe(4);
+  expect(result.candidates).toHaveLength(2);
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+  const outcomes = f.runtime.db.connection
+    .prepare('SELECT result_json FROM tool_executions ORDER BY rowid')
+    .all() as { result_json: string }[];
+  expect(outcomes.map((row) => JSON.parse(row.result_json).ok)).toEqual([false, true, false]);
+  expect(JSON.parse(outcomes[0]?.result_json ?? '{}').error.message).toContain('冻结范围');
+  expect(JSON.parse(outcomes[2]?.result_json ?? '{}').error.message).toContain('已提交完整批次');
+});
+
+it('does not publish a submitted batch when the final model request exceeds the call budget', async () => {
+  const f = await fixture(
+    output,
+    () =>
+      new FakeModelAdapter([
+        [
+          proposeBatch([
+            elementCandidatePayloadSchema.parse({
+              tempId: 'character_a',
+              kind: 'character',
+              title: '甲',
+              targetDocumentId: null,
+              content: '安静',
+              data: {},
+              reason: '作者指定',
+              openQuestions: [],
+            }),
+          ]),
+        ],
+        [response(JSON.stringify({ guidance: { reply: '整理完毕。', question: '接下来呢？' } }))],
+      ]),
+  );
+  const job = await f.service.createGeneration(
+    f.project.id,
+    {
+      ...f.input,
+      guided: true,
+      kinds: ['story_premise'],
+      mode: 'replace',
+      maxCalls: 1,
+    },
+    randomUUID(),
+  );
+  const result = await f.settled(job.id);
+  expect(result.status).toBe('failed');
+  expect(result.callCount).toBe(1);
+  expect(result.candidates).toHaveLength(0);
+  expect(f.service.list(f.project.id)).toHaveLength(0);
+  expect(result.error).toContain('BUDGET_LIMIT');
 });

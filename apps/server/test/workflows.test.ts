@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import {
+  AgentError,
   FakeModelAdapter,
   type ModelAdapter,
   type ModelEvent,
@@ -11,19 +12,23 @@ import {
 import {
   agentProfileConfigSchema,
   createDocumentSchema,
+  linkedChapterIds,
   parseReviewMarkdown,
+  piConnectionSchema,
   type WorkflowRun,
   workflowInputSchema,
   workflowTemplateConfigSchema,
 } from '@lingma/shared';
 import { afterEach, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
+import { loadMigrations } from '../src/db/database.js';
 import { createApp } from '../src/http/app.js';
 import { createLogger } from '../src/logger.js';
 import { openRuntime } from '../src/runtime.js';
 import { NovelService } from '../src/services/novels.js';
 import { SkillService } from '../src/services/skills.js';
 import { buildWorkflowResult, splitRecordSections } from '../src/workflows/adapters.js';
+import { AgentLibrary } from '../src/workflows/library.js';
 import { WritingService } from '../src/writing/service.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -182,6 +187,51 @@ const decide = (
     randomUUID(),
   );
 
+it.each(['reset', 'missing-chapter'])(
+  'restores the chapter template after %s and reuses its published roles',
+  async (scenario) => {
+    const f = await fixture();
+    const library = f.writing.workflows.library;
+    const profiles = library.profiles();
+    const retained = library.templates().filter((item) => item.id !== f.template.id);
+    f.runtime.db.transaction((db) => {
+      if (scenario === 'reset') {
+        const reset = loadMigrations().find((migration) => migration.version === 20);
+        if (!reset) throw new Error('missing reset migration');
+        db.exec(reset.sql);
+      } else {
+        db.prepare('DELETE FROM workflow_template_versions WHERE template_id=?').run(f.template.id);
+        db.prepare('DELETE FROM workflow_templates WHERE id=?').run(f.template.id);
+      }
+    });
+    const restored = new AgentLibrary(f.writing.store, f.skills);
+    const chapter = restored.templates().filter((item) => item.draft.taskType === 'chapter_write');
+    expect(chapter).toHaveLength(1);
+    expect(chapter[0]?.versions[0]?.config.name).toBe('单章协作写作');
+    expect(chapter[0]?.versions[0]?.config.steps.map((step) => step.stage)).toEqual([
+      'plan',
+      'draft',
+      'review',
+      'review',
+      'revise',
+    ]);
+    expect(chapter[0]?.versions[0]?.config.steps.map((step) => step.agentVersionId)).toEqual(
+      f.template.versions[0]?.config.steps.map((step) => step.agentVersionId),
+    );
+    if (scenario === 'missing-chapter') {
+      expect(restored.profiles()).toEqual(profiles);
+      for (const template of retained) expect(restored.template(template.id)).toEqual(template);
+    } else {
+      for (const profile of profiles) expect(restored.profile(profile.id)).toEqual(profile);
+    }
+    const templates = restored.templates();
+    const after = restored.profiles();
+    const reopened = new AgentLibrary(f.writing.store, f.skills);
+    expect(reopened.templates()).toEqual(templates);
+    expect(reopened.profiles()).toEqual(after);
+  },
+);
+
 it('runs the default pipeline unattended, merges reviews and stops at the final proposal', async () => {
   const f = await fixture();
   const w = await f.writing.workflows.create(f.input, randomUUID());
@@ -201,6 +251,60 @@ it('runs the default pipeline unattended, merges reviews and stops at the final 
   expect(f.writing.store.accept(done.proposalId as string, randomUUID())).toEqual(a);
   expect(f.writing.workflows.get(w.id).outcome).toBe('accepted');
   expect(f.novels.getDocument(f.chapter.document.id).version.versionNo).toBe(2);
+});
+
+it('drafts from an explicit plan and links the new chapter only when the author accepts', async () => {
+  const f = await fixture({
+    factory: (request) =>
+      new FakeModelAdapter([
+        [
+          text(
+            taskOf(request).workflowNode.stage === 'review'
+              ? '无重要问题'
+              : '# 新章 雪夜\n\n雪落在站台的长椅上。',
+          ),
+        ],
+      ]),
+  });
+  const event = f.novels.createDocument(
+    f.project.id,
+    createDocumentSchema.parse({
+      baseStructureVersion: f.novels.getProject(f.project.id).structureVersion,
+      kind: 'chapter_outline',
+      title: '第三卷：雪夜站台',
+      content: '规划两人在站台相遇。',
+      storyTime: '寒假前',
+      summary: '一场雪夜的重逢。',
+    }),
+  );
+  const input = workflowInputSchema.parse({
+    ...f.input,
+    targetDocumentId: null,
+    baseVersionId: null,
+    mode: 'create',
+    sourceOutlineId: event.document.id,
+    selectedVersionIds: [event.version.id],
+    allowFutureOutline: true,
+  });
+  const w = await f.writing.workflows.create(input, randomUUID());
+  const ready = await state(f, w.id, 'awaiting_acceptance');
+  expect(
+    f.novels.getStructure(f.project.id).documents.filter((item) => item.kind === 'chapter'),
+  ).toHaveLength(1);
+  expect(linkedChapterIds(f.novels.getDocument(event.document.id).document)).toEqual([]);
+  const accepted = decide(f, ready, 'accept_result');
+  const chapterId = accepted.acceptedResults[0]?.documentId;
+  expect(chapterId).toBeTruthy();
+  expect(linkedChapterIds(f.novels.getDocument(event.document.id).document)).toEqual([chapterId]);
+  expect(f.novels.getDocument(f.chapter.document.id).version.content).toBe('旧正文。');
+  expect(f.novels.getDocument(event.document.id).version.content).toBe(event.version.content);
+  await expect(f.writing.workflows.preview({ ...input, selectedVersionIds: [] })).rejects.toThrow(
+    '明确引用',
+  );
+  const other = f.novels.createProject('另一部作品');
+  await expect(f.writing.workflows.preview({ ...input, projectId: other.id })).rejects.toThrow(
+    '来源规划',
+  );
 });
 
 it('keeps reviewers independent of each other and sends them the same draft', async () => {
@@ -340,6 +444,120 @@ it('fails a node that returns nothing without inventing an artifact', async () =
   expect(failed.nodes[0]?.status).toBe('failed');
 });
 
+it('excludes transport settings from workflow snapshots and preview hashes', async () => {
+  const f = await fixture();
+  const preview = await f.writing.workflows.preview(f.input);
+  const provider = f.writing.providers.get(f.provider.id);
+  f.writing.providers.save(
+    {
+      ...provider.config,
+      connection: { ...provider.config.connection, baseUrl: 'http://127.0.0.1:2/v1' },
+    },
+    provider.id,
+    provider.revision,
+    'rotated-test-key',
+  );
+  const next = await f.writing.workflows.preview(f.input);
+  expect(next.hash).toBe(preview.hash);
+  const w = await f.writing.workflows.create(
+    { ...f.input, expectedPreviewHash: preview.hash },
+    randomUUID(),
+  );
+  const done = await state(f, w.id, 'awaiting_acceptance');
+  for (const context of Object.values(done.snapshot.contexts)) {
+    expect(context.request.connectionSnapshot).not.toHaveProperty('baseUrl');
+    expect(context.request.connectionSnapshot).not.toHaveProperty('credentialRef');
+  }
+  const row = f.runtime.db.connection
+    .prepare('SELECT state_json FROM workflow_runs WHERE id=?')
+    .get(w.id) as { state_json: string };
+  expect(row.state_json).not.toContain('baseUrl');
+  expect(row.state_json).not.toContain('credentialRef');
+  expect(piConnectionSchema.parse(f.requests[0]?.connectionSnapshot).baseUrl).toBe(
+    'http://127.0.0.1:2/v1',
+  );
+});
+
+it('retries legacy workflows through the current transport and preserves tool checkpoints', async () => {
+  const attempts: ModelRequest[] = [];
+  let fail = true;
+  const call = { id: 'search-1', name: 'search_documents', arguments: { query: '来客' } };
+  const toolEvent: ModelEvent = {
+    type: 'response',
+    response: {
+      text: '',
+      calls: [call],
+      transcriptMessage: { role: 'assistant', content: '', toolCalls: [call] },
+      stop: 'tool_calls',
+      usage,
+    },
+  };
+  const f = await fixture({
+    factory: (request) => {
+      const adapter = new FakeModelAdapter(
+        fail
+          ? [[toolEvent], new AgentError('PROVIDER_UNAVAILABLE')]
+          : [[text(taskOf(request).workflowNode.stage === 'review' ? '无重要问题' : '节点产物')]],
+      );
+      return {
+        id: adapter.id,
+        stream(request, signal) {
+          attempts.push(structuredClone(request));
+          return adapter.stream(request, signal);
+        },
+      };
+    },
+  });
+  const w = await f.writing.workflows.create(f.input, randomUUID());
+  const failed = await state(f, w.id, 'failed');
+  const originalRunId = failed.nodes[0]?.runIds[0] as string;
+  const originalCheckpoint = f.writing.store.row(originalRunId).checkpoint_json;
+  expect(originalCheckpoint).toBeTruthy();
+  // Simulate a workflow persisted before transport was removed from snapshots.
+  const legacy = JSON.parse(JSON.stringify(failed));
+  for (const context of Object.values(legacy.snapshot.contexts) as {
+    request: { connectionSnapshot: Record<string, unknown> };
+  }[]) {
+    context.request.connectionSnapshot.baseUrl = f.provider.config.connection.baseUrl;
+    context.request.connectionSnapshot.credentialRef = null;
+  }
+  f.runtime.db.connection
+    .prepare('UPDATE workflow_runs SET state_json=? WHERE id=?')
+    .run(JSON.stringify(legacy), w.id);
+  const provider = f.writing.providers.get(f.provider.id);
+  const updated = f.writing.providers.save(
+    {
+      ...provider.config,
+      modelId: 'new-default-model',
+      parameters: { temperature: 0.9 },
+      connection: { ...provider.config.connection, baseUrl: 'http://127.0.0.1:2/v1' },
+    },
+    provider.id,
+    provider.revision,
+    'rotated-test-key',
+  );
+  fail = false;
+  decide(f, f.writing.workflows.get(w.id), 'retry');
+  const done = await state(f, w.id, 'awaiting_acceptance');
+  const retryRequest = attempts[2] as ModelRequest;
+  expect(piConnectionSchema.parse(retryRequest.connectionSnapshot)).toMatchObject({
+    baseUrl: updated.config.connection.baseUrl,
+    credentialRef: updated.config.connection.credentialRef,
+  });
+  expect(retryRequest.modelId).toBe('fixture');
+  expect(retryRequest.parameters).toEqual({});
+  expect(retryRequest.messages.map((message) => message.role)).toEqual([
+    'user',
+    'assistant',
+    'toolResult',
+  ]);
+  expect(attempts.filter((request) => request.messages.length === 1)).toHaveLength(4);
+  expect(done.nodes[0]?.runIds).toHaveLength(2);
+  expect(f.writing.store.row(originalRunId).checkpoint_json).toBe(originalCheckpoint);
+  expect(JSON.stringify(done.snapshot)).not.toContain('baseUrl');
+  expect(JSON.stringify(done.snapshot)).not.toContain('credentialRef');
+});
+
 it('holds project writing ownership while awaiting approval and releases it on cancellation', async () => {
   const f = await fixture();
   const w = await f.writing.workflows.create(f.input, randomUUID());
@@ -368,6 +586,13 @@ it('cancels an active model call and never starts downstream nodes', async () =>
   const w = await f.writing.workflows.create(f.input, randomUUID());
   await vi.waitFor(() => expect(f.writing.workflows.get(w.id).modelCalls).toBe(1));
   const current = f.writing.workflows.get(w.id);
+  expect(current.nodes[0]?.status).toBe('running');
+  const persisted = f.writing.store.db
+    .prepare(
+      "SELECT json_extract(state_json, '$.nodes[0].status') AS status FROM workflow_runs WHERE id=?",
+    )
+    .get(w.id) as { status: string };
+  expect(persisted.status).toBe('running');
   decide(f, current, 'cancel');
   const id = current.nodes[0]?.runIds[0];
   if (!id) throw new Error('missing');
@@ -777,4 +1002,535 @@ it('refreshing sources updates material but keeps the frozen model, parameters a
   expect(refreshed.sourceHistory).toHaveLength(1);
   const again = await state(f, w.id, 'awaiting_acceptance');
   expect(again.round).toBeGreaterThan(ready.round);
+});
+
+it('runs connected Agent debates for exactly three rounds and gives the summarizer their full exchange', async () => {
+  const f = await fixture({
+    factory: (request) =>
+      new FakeModelAdapter([[text(`发言 ${taskOf(request).workflowNode.key}`)]]),
+  });
+  const preset = f.writing.workflows.library
+    .templates()
+    .find((item) => item.draft.executionMode === 'graph');
+  const version = preset?.versions[0];
+  if (!version) throw new Error('missing debate template');
+  const before = f.novels.getStructure(f.project.id);
+  const started = await f.writing.workflows.create(
+    workflowInputSchema.parse({
+      ...f.input,
+      taskType: 'discussion',
+      targetDocumentId: null,
+      baseVersionId: null,
+      templateVersionId: version.id,
+    }),
+    randomUUID(),
+  );
+  const done = await state(f, started.id, 'awaiting_acceptance');
+  expect(done.nodes.map((node) => node.key)).toEqual([
+    'pro',
+    'con',
+    'pro@r1',
+    'con@r1',
+    'pro@r2',
+    'con@r2',
+    'summary@r2',
+  ]);
+  expect(f.requests).toHaveLength(7);
+  expect(done.nodes.some((node) => node.stage === 'merge')).toBe(false);
+  expect(done.result).toEqual({ type: 'discussion_summary', content: '发言 summary@r2' });
+  const tasks = f.requests.map(taskOf);
+  expect(tasks[0]?.upstream).toEqual([]);
+  expect(tasks[1]?.upstream).toEqual([]);
+  expect(tasks[2]?.upstream.map((item) => item.from).sort()).toEqual(['con', 'pro']);
+  expect(tasks[3]?.upstream.map((item) => item.from).sort()).toEqual(['con', 'pro']);
+  expect(tasks[4]?.upstream.map((item) => item.from).sort()).toEqual(['con@r1', 'pro@r1']);
+  expect(tasks[6]?.upstream.map((item) => item.from)).toEqual([
+    'pro',
+    'con',
+    'pro@r1',
+    'con@r1',
+    'pro@r2',
+    'con@r2',
+  ]);
+  expect(f.requests[0]?.systemPrompt).toContain('你正在参加多 Agent 辩论');
+  expect(f.requests[6]?.systemPrompt).toContain('你在全部辩论轮次结束后汇总');
+  const completed = decide(f, done, 'accept_result');
+  expect(completed.status).toBe('completed');
+  expect(completed.artifacts).toHaveLength(7);
+  expect(f.novels.getStructure(f.project.id)).toEqual(before);
+});
+
+it('honors arbitrary same-round wires without leaking unrelated Agent statements', async () => {
+  const f = await fixture({
+    factory: (request) => new FakeModelAdapter([[text(taskOf(request).workflowNode.key)]]),
+  });
+  const library = f.writing.workflows.library;
+  const agent = library.profiles().find((profile) => profile.draft.capability === 'review')
+    ?.versions[0];
+  if (!agent) throw new Error('missing reviewer');
+  let template = library.createTemplate(
+    workflowTemplateConfigSchema.parse({
+      name: '自由连线',
+      taskType: 'discussion',
+      executionMode: 'graph',
+      maxRounds: 1,
+      outputNodeKey: 'summary',
+      steps: [
+        { key: 'first', name: '提案', stage: 'agent', agentVersionId: agent.id },
+        { key: 'unrelated', name: '独立分析', stage: 'agent', agentVersionId: agent.id },
+        {
+          key: 'reply',
+          name: '质疑',
+          stage: 'agent',
+          agentVersionId: agent.id,
+          dependsOn: ['first'],
+        },
+        {
+          key: 'summary',
+          name: '汇总',
+          stage: 'agent',
+          agentVersionId: agent.id,
+          dependsOn: ['reply'],
+          runWhen: 'after_rounds',
+        },
+      ],
+    }),
+  );
+  template = library.publishTemplate(template.id, template.revision);
+  const started = await f.writing.workflows.create(
+    workflowInputSchema.parse({
+      ...f.input,
+      taskType: 'discussion',
+      targetDocumentId: null,
+      baseVersionId: null,
+      templateVersionId: template.versions[0]?.id,
+    }),
+    randomUUID(),
+  );
+  await state(f, started.id, 'awaiting_acceptance');
+  const tasks = f.requests.map(taskOf);
+  expect(
+    tasks.find((task) => task.workflowNode.key === 'reply')?.upstream.map((item) => item.from),
+  ).toEqual(['first']);
+  expect(
+    tasks.find((task) => task.workflowNode.key === 'summary')?.upstream.map((item) => item.from),
+  ).toEqual(['first', 'reply']);
+});
+
+it('pauses a debating Agent at manual gates and cancels before another round is scheduled', async () => {
+  const f = await fixture();
+  const version = f.writing.workflows.library
+    .templates()
+    .find((item) => item.draft.executionMode === 'graph')?.versions[0];
+  const started = await f.writing.workflows.create(
+    workflowInputSchema.parse({
+      ...f.input,
+      taskType: 'discussion',
+      targetDocumentId: null,
+      baseVersionId: null,
+      templateVersionId: version?.id,
+      manualGates: true,
+    }),
+    randomUUID(),
+  );
+  const waiting = await state(f, started.id, 'awaiting_input');
+  expect(waiting.nodes[0]?.status).toBe('awaiting_gate');
+  expect(f.requests).toHaveLength(1);
+  decide(f, waiting, 'release', { nodeKey: 'pro' });
+  const second = await state(f, started.id, 'awaiting_input');
+  expect(second.nodes[1]?.status).toBe('awaiting_gate');
+  const cancelled = decide(f, second, 'cancel');
+  await f.writing.workflows.pump();
+  expect(cancelled.status).toBe('cancelled');
+  expect(f.requests).toHaveLength(2);
+});
+
+it('rejects deadlocking Agent graphs but accepts explicit cross-round feedback', () => {
+  const agentVersionId = randomUUID();
+  const step = (key: string, extra: Record<string, unknown> = {}) => ({
+    key,
+    name: key,
+    stage: 'agent',
+    agentVersionId,
+    ...extra,
+  });
+  const base = {
+    name: '辩论',
+    taskType: 'discussion',
+    executionMode: 'graph',
+    maxRounds: 3,
+    outputNodeKey: 'b',
+  };
+  const parse = (steps: unknown[], extra = {}) =>
+    workflowTemplateConfigSchema.safeParse({ ...base, steps, ...extra }).success;
+  expect(parse([step('a', { feedbackFrom: ['b'] }), step('b', { feedbackFrom: ['a'] })])).toBe(
+    true,
+  );
+  expect(parse([step('a', { dependsOn: ['b'] }), step('b', { dependsOn: ['a'] })])).toBe(false);
+  expect(parse([step('a', { feedbackFrom: ['missing'] }), step('b')])).toBe(false);
+  expect(parse([step('a', { feedbackFrom: ['b'] }), step('b', { runWhen: 'after_rounds' })])).toBe(
+    false,
+  );
+  expect(parse([step('a', { dependsOn: ['b'] }), step('b', { runWhen: 'after_rounds' })])).toBe(
+    false,
+  );
+  expect(parse([step('a'), step('b')], { outputNodeKey: 'missing' })).toBe(false);
+  expect(parse([step('a'), step('b')], { maxRounds: 0 })).toBe(false);
+  expect(parse([step('a'), step('b')], { maxRounds: 21 })).toBe(false);
+});
+
+it('re-runs a debating Agent and every connected later turn while keeping unconnected turns and history', async () => {
+  let attempt = 0;
+  const f = await fixture({
+    factory: (request) =>
+      new FakeModelAdapter([[text(`${taskOf(request).workflowNode.key} / attempt ${++attempt}`)]]),
+  });
+  const template = f.writing.workflows.library
+    .templates()
+    .find((item) => item.draft.executionMode === 'graph');
+  const started = await f.writing.workflows.create(
+    workflowInputSchema.parse({
+      ...f.input,
+      taskType: 'discussion',
+      targetDocumentId: null,
+      baseVersionId: null,
+      templateVersionId: template?.versions[0]?.id,
+    }),
+    randomUUID(),
+  );
+  const first = await state(f, started.id, 'awaiting_acceptance');
+  const old = first.nodes.find((node) => node.key === 'pro@r1')?.artifactId;
+  const unchanged = first.nodes.find((node) => node.key === 'con@r1')?.artifactId;
+  decide(f, first, 'rerun', { nodeKey: 'pro@r1' });
+  const second = await state(f, started.id, 'awaiting_acceptance');
+  expect(f.requests).toHaveLength(11);
+  expect(second.nodes.find((node) => node.key === 'pro@r1')?.artifactId).not.toBe(old);
+  expect(second.nodes.find((node) => node.key === 'con@r1')?.artifactId).toBe(unchanged);
+  expect(taskOf(f.requests.at(-1) as ModelRequest).upstream.map((item) => item.id)).not.toContain(
+    old,
+  );
+  expect(second.artifacts.some((artifact) => artifact.id === old)).toBe(true);
+  expect(second.nodes.every((node) => node.status === 'released')).toBe(true);
+  expect(second.result?.type).toBe('discussion_summary');
+});
+
+async function embeddedDebate(f: Fixture, gate: 'auto' | 'manual' = 'auto') {
+  const library = f.writing.workflows.library;
+  const preset = library.templates().find((item) => item.draft.executionMode === 'graph');
+  const agents = preset?.draft.steps;
+  if (!agents?.[0] || !agents[1] || !agents[2]) throw new Error('missing debate agents');
+  const config = workflowTemplateConfigSchema.parse({
+    ...f.template.draft,
+    name: '生成 → 辩论 → 审校',
+    steps: [
+      ...f.template.draft.steps.map((step) =>
+        step.stage === 'review' ? { ...step, dependsOn: ['debate'] } : step,
+      ),
+      {
+        key: 'debate',
+        name: '方案辩论',
+        stage: 'debate',
+        agentVersionId: agents[2].agentVersionId,
+        gate,
+        dependsOn: ['draft'],
+        instructions: '主角是否应该揭穿来客？',
+        debate: {
+          rounds: 3,
+          participants: agents.slice(0, 2).map((agent) => ({
+            name: agent.name,
+            agentVersionId: agent.agentVersionId,
+            instructions: agent.instructions ?? '',
+          })),
+        },
+      },
+    ],
+  });
+  const created = library.createTemplate(config);
+  const published = library.publishTemplate(created.id, created.revision);
+  return { ...f.input, templateVersionId: published.versions[0]?.id as string };
+}
+
+it('embeds a complete debate between generation and review without replacing the draft', async () => {
+  const f = await fixture();
+  const input = await embeddedDebate(f);
+  const started = await f.writing.workflows.create(input, randomUUID());
+  const done = await state(f, started.id, 'awaiting_acceptance');
+  const tasks = f.requests.map(taskOf);
+  const statements = tasks.filter((task) => task.workflowNode.stage === 'agent');
+  expect(statements).toHaveLength(6);
+  expect(statements[0]?.upstream.map((item) => item.from)).toEqual(['draft']);
+  expect(statements[1]?.upstream.map((item) => item.from)).toEqual(['draft']);
+  expect(statements[2]?.upstream.map((item) => item.from)).toEqual([
+    'draft',
+    'debate~d0p0',
+    'debate~d0p1',
+  ]);
+  const summary = tasks.find((task) => task.workflowNode.stage === 'debate');
+  expect(summary?.upstream).toHaveLength(7);
+  const reviews = tasks.filter((task) => task.workflowNode.stage === 'review');
+  for (const review of reviews)
+    expect(review.upstream.map((item) => item.from)).toContain('debate');
+  expect(done.nodes.find((node) => node.key === 'debate')?.inputArtifactIds).toHaveLength(7);
+  expect(done.artifacts.find((artifact) => artifact.id === done.latestDraftId)?.nodeKey).toBe(
+    'draft',
+  );
+  expect(done.snapshot.profiles).toHaveLength(7);
+  expect(
+    f.requests.find((request) => taskOf(request).workflowNode.key === 'debate~d0p1')?.systemPrompt,
+  ).toContain('从不同立场挑战提案');
+  expect(
+    f.requests.find((request) => taskOf(request).workflowNode.key === 'debate')?.systemPrompt,
+  ).toContain('全部辩论轮次结束后汇总');
+});
+
+it('holds the embedded summary before downstream review and can cancel at that boundary', async () => {
+  const f = await fixture();
+  const started = await f.writing.workflows.create(await embeddedDebate(f, 'manual'), randomUUID());
+  const held = await state(f, started.id, 'awaiting_input');
+  expect(held.nodes.find((node) => node.status === 'awaiting_gate')?.key).toBe('debate');
+  expect(f.requests.map(taskOf).some((task) => task.workflowNode.stage === 'review')).toBe(false);
+  decide(f, held, 'release', { nodeKey: 'debate' });
+  const done = await state(f, started.id, 'awaiting_acceptance');
+  expect(
+    done.nodes
+      .filter((node) => node.stage === 'review')
+      .every((node) => node.status === 'released'),
+  ).toBe(true);
+  decide(f, done, 'reject');
+  const second = await f.writing.workflows.create(await embeddedDebate(f, 'manual'), randomUUID());
+  const heldAgain = await state(f, second.id, 'awaiting_input');
+  const count = f.requests.length;
+  const cancelled = decide(f, heldAgain, 'cancel');
+  expect(cancelled.status).toBe('cancelled');
+  expect(f.requests).toHaveLength(count);
+});
+
+it('repeats the embedded debate on the revised draft before a second review round', async () => {
+  const f = await fixture({ issueRounds: 1 });
+  const started = await f.writing.workflows.create(await embeddedDebate(f), randomUUID());
+  const done = await state(f, started.id, 'awaiting_acceptance');
+  expect(done.round).toBe(1);
+  const tasks = f.requests.map(taskOf);
+  const repeated = tasks.filter(
+    (task) => task.workflowNode.stage === 'agent' && task.workflowNode.round === 1,
+  );
+  expect(repeated).toHaveLength(6);
+  expect(repeated[0]?.upstream.map((item) => item.from)).toEqual(['revise@r1']);
+  expect(repeated.every((task) => task.upstream.every((item) => item.from !== 'draft'))).toBe(true);
+  const review = tasks.find((task) => task.workflowNode.key === 'continuity@r1');
+  expect(review?.upstream.map((item) => item.from)).toContain('debate@r1');
+  expect(review?.upstream.map((item) => item.from)).not.toContain('debate');
+  expect(done.artifacts.find((artifact) => artifact.id === done.latestDraftId)?.nodeKey).toBe(
+    'revise@r1',
+  );
+});
+
+it('reruns an embedded statement and its consumers, keeping independent statements and the draft', async () => {
+  const f = await fixture();
+  const started = await f.writing.workflows.create(await embeddedDebate(f), randomUUID());
+  const first = await state(f, started.id, 'awaiting_acceptance');
+  const independent = first.nodes.find((node) => node.key === 'debate~d0p1')?.artifactId;
+  const oldSummary = first.nodes.find((node) => node.key === 'debate')?.artifactId;
+  decide(f, first, 'rerun', { nodeKey: 'debate~d0p0' });
+  const second = await state(f, started.id, 'awaiting_acceptance');
+  expect(second.nodes.find((node) => node.key === 'debate~d0p1')?.artifactId).toBe(independent);
+  expect(second.nodes.find((node) => node.key === 'debate')?.artifactId).not.toBe(oldSummary);
+  expect(second.latestDraftId).toBe(first.latestDraftId);
+  expect(second.nodes.find((node) => node.key === 'continuity')?.inputArtifactIds).not.toContain(
+    oldSummary,
+  );
+  expect(second.artifacts.some((artifact) => artifact.id === oldSummary)).toBe(true);
+  const updatedDraft = '作者改写后的全新稿件';
+  decide(f, second, 'edit_artifact', { nodeKey: 'draft', content: updatedDraft });
+  const third = await state(f, started.id, 'awaiting_acceptance');
+  expect(
+    f.requests
+      .map(taskOf)
+      .filter((task) => task.workflowNode.key === 'debate~d0p0')
+      .at(-1)
+      ?.upstream.map((item) => item.markdown)
+      .join('\n'),
+  ).toContain(updatedDraft);
+  expect(third.nodes.find((node) => node.key === 'debate~d0p1')?.artifactId).not.toBe(independent);
+});
+
+it('validates embedded debate limits and every nested Agent version before starting', async () => {
+  const f = await fixture();
+  const input = await embeddedDebate(f);
+  const library = f.writing.workflows.library;
+  const config = library.templateVersion(input.templateVersionId).config;
+  const debate = config.steps.find((step) => step.stage === 'debate');
+  if (!debate?.debate) throw new Error('missing debate');
+  const settings = debate.debate;
+  for (const rounds of [0, 21, 1.5]) {
+    expect(
+      workflowTemplateConfigSchema.safeParse({
+        ...config,
+        steps: config.steps.map((step) =>
+          step === debate ? { ...step, debate: { ...debate.debate, rounds } } : step,
+        ),
+      }).success,
+    ).toBe(false);
+  }
+  expect(
+    workflowTemplateConfigSchema.safeParse({
+      ...config,
+      steps: config.steps.map((step) =>
+        step === debate
+          ? {
+              ...step,
+              debate: { ...settings, participants: settings.participants.slice(0, 1) },
+            }
+          : step,
+      ),
+    }).success,
+  ).toBe(false);
+  const invalid = structuredClone(config);
+  const participant = invalid.steps.find((step) => step.stage === 'debate')?.debate
+    ?.participants[0];
+  if (!participant) throw new Error('missing participant');
+  participant.agentVersionId = randomUUID();
+  expect(() => library.createTemplate(invalid)).toThrow('Agent 发布版本不存在');
+});
+
+it('splits a volume into independent chapter plans and writes each into the same volume', async () => {
+  let planning = true;
+  const f = await fixture({
+    factory: (request) =>
+      new FakeModelAdapter([
+        [
+          text(
+            taskOf(request).workflowNode.stage === 'review'
+              ? '无重要问题'
+              : planning
+                ? '## 第一章 初见\n概述：在码头相遇。\n### 目标\n初次相识，暴雨留给下一章。\n\n## 第二章 暴雨\n概述：暴雨中互助。\n### 目标\n承接相遇，展开暴雨。'
+                : '# 第一章 初见\n\n她在码头停步。',
+          ),
+        ],
+      ]),
+  });
+  const source = f.novels.createDocument(
+    f.project.id,
+    createDocumentSchema.parse({
+      baseStructureVersion: f.novels.getProject(f.project.id).structureVersion,
+      kind: 'chapter_outline',
+      title: '第一卷 雨港',
+      content: '相遇、暴雨、离别。',
+    }),
+  );
+  const template = f.writing.workflows.library
+    .templates()
+    .find((item) => item.draft.taskType === 'chapter_planning')?.versions[0];
+  expect(template).toBeTruthy();
+  const input = workflowInputSchema.parse({
+    ...f.input,
+    taskType: 'chapter_planning',
+    templateVersionId: template?.id,
+    targetDocumentId: null,
+    baseVersionId: null,
+    sourceOutlineId: source.document.id,
+    chapterCount: 2,
+    newVolumeTitle: source.document.title,
+    selectedVersionIds: [source.version.id],
+    allowFutureOutline: true,
+  });
+  const run = await f.writing.workflows.create(input, randomUUID());
+  const ready = await state(f, run.id, 'awaiting_acceptance');
+  expect(ready.result).toMatchObject({
+    type: 'chapter_plan_batch',
+    items: [{ title: '第一章 初见' }, { title: '第二章 暴雨' }],
+  });
+  expect(f.novels.getStructure(f.project.id).volumes).toHaveLength(0);
+  const key = randomUUID();
+  const accepted = f.writing.workflows.decide(
+    ready.id,
+    { action: 'accept_result', expectedRevision: ready.revision, feedback: '' },
+    key,
+  );
+  const replay = f.writing.workflows.decide(
+    ready.id,
+    { action: 'accept_result', expectedRevision: ready.revision, feedback: '' },
+    key,
+  );
+  expect(replay.acceptedResults).toEqual(accepted.acceptedResults);
+  const structure = f.novels.getStructure(f.project.id);
+  expect(structure.volumes).toHaveLength(1);
+  const plans = accepted.acceptedResults.map((item) => f.novels.getDocument(item.documentId));
+  expect(plans).toHaveLength(2);
+  expect(plans[0]?.document.summary).toBe('在码头相遇。');
+  expect(plans[1]?.document.summary).toBe('暴雨中互助。');
+  for (const plan of plans)
+    expect(plan.document).toMatchObject({
+      kind: 'chapter_plan',
+      parentOutlineId: source.document.id,
+      volumeId: structure.volumes[0]?.id,
+      chapterIds: [],
+    });
+  expect(f.novels.getDocument(source.document.id).version.content).toBe(source.version.content);
+  planning = false;
+  for (const plan of plans) {
+    const draftInput = workflowInputSchema.parse({
+      ...f.input,
+      targetDocumentId: null,
+      baseVersionId: null,
+      sourceOutlineId: plan.document.id,
+      selectedVersionIds: [plan.version.id],
+      allowFutureOutline: true,
+    });
+    const draft = await f.writing.workflows.create(draftInput, randomUUID());
+    const draftReady = await state(f, draft.id, 'awaiting_acceptance');
+    const saved = decide(f, draftReady, 'accept_result');
+    const chapterId = saved.acceptedResults[0]?.documentId;
+    expect(chapterId).toBeTruthy();
+    expect(f.novels.getDocument(chapterId as string).document.volumeId).toBe(
+      structure.volumes[0]?.id,
+    );
+    expect(linkedChapterIds(f.novels.getDocument(plan.document.id).document)).toEqual([chapterId]);
+    await expect(f.writing.workflows.preview(draftInput)).rejects.toThrow('已有关联正文');
+  }
+  expect(linkedChapterIds(f.novels.getDocument(source.document.id).document)).toHaveLength(2);
+  expect(
+    f.novels.getStructure(f.project.id).documents.filter((item) => item.kind === 'chapter'),
+  ).toHaveLength(3);
+  const other = f.novels.createProject('另一部作品');
+  await expect(f.writing.workflows.preview({ ...input, projectId: other.id })).rejects.toThrow(
+    '来源规划',
+  );
+  await expect(f.writing.workflows.preview({ ...input, selectedVersionIds: [] })).rejects.toThrow(
+    '明确引用',
+  );
+});
+
+it('does not silently accept a chapter plan batch with fewer chapters than requested', async () => {
+  const f = await fixture({
+    factory: (request) =>
+      new FakeModelAdapter([
+        [
+          text(
+            taskOf(request).workflowNode.stage === 'review'
+              ? '无重要问题'
+              : '## 第一章 初见\n只有一章。',
+          ),
+        ],
+      ]),
+  });
+  const template = f.writing.workflows.library
+    .templates()
+    .find((item) => item.draft.taskType === 'chapter_planning')?.versions[0];
+  const run = await f.writing.workflows.create(
+    workflowInputSchema.parse({
+      ...f.input,
+      taskType: 'chapter_planning',
+      templateVersionId: template?.id,
+      targetDocumentId: null,
+      baseVersionId: null,
+      chapterCount: 2,
+    }),
+    randomUUID(),
+  );
+  const stopped = await state(f, run.id, 'awaiting_input');
+  expect(JSON.stringify(stopped)).toContain('章纲数量不符');
+  expect(
+    f.novels.getStructure(f.project.id).documents.filter((item) => item.kind === 'chapter_plan'),
+  ).toEqual([]);
 });

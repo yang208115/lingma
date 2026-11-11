@@ -73,19 +73,23 @@ export function entry(
     reason,
     planning:
       doc.kind === 'chapter_outline' ||
+      doc.kind === 'chapter_plan' ||
       (isElementKind(doc.kind) &&
         Boolean(version.metadata.element) &&
         readElementData(version.metadata).nature === 'planned'),
-    metadata: isStoryEventKind(doc.kind)
-      ? {
-          ...version.metadata,
-          storyEvent: {
-            storyTime: doc.storyTime ?? '',
-            summary: doc.summary ?? '',
-            chapterIds: linkedChapterIds(doc),
-          },
-        }
-      : version.metadata,
+    metadata:
+      isStoryEventKind(doc.kind) || doc.kind === 'chapter_plan'
+        ? {
+            ...version.metadata,
+            storyEvent: {
+              storyTime: doc.storyTime ?? '',
+              summary: doc.summary ?? '',
+              chapterIds: linkedChapterIds(doc),
+              parentOutlineId: doc.parentOutlineId ?? null,
+              volumeId: doc.volumeId,
+            },
+          }
+        : version.metadata,
   };
 }
 export function canPropose(input: WritingRunInput) {
@@ -186,6 +190,7 @@ export class ContextService {
         if (doc.kind === 'chapter' && future) return false;
         if (
           (doc.kind === 'chapter_outline' ||
+            doc.kind === 'chapter_plan' ||
             (doc.kind === 'timeline_event' &&
               (!version?.metadata.element ||
                 readElementData(version.metadata).nature === 'planned'))) &&
@@ -342,7 +347,7 @@ export class ContextService {
 正式文档内容只能通过本次明确提供的文档工具提交，最终聊天回复仅用于说明结果，不能作为正文候选。同一次运行中，新建正文章节与修改已有文档互斥（重试延续原运行的选择）；提交其中一种后不要调用另一种，需要另一种操作时请作者另发任务。不要把操作说明、完成报告或候选摘要填入正文 content。
 ${references.length ? '作者输入中的 @【标签】对应下方 references 中的具体卷或资料。以 ID 和 versionId 绑定的真实对象为准，同名资料不可混用；卷目录只提供结构，文档正文以 context 或成功读取的冻结版本为准。' : ''}
 ${canCreateChapters(input) ? '本次可以新建正文章节。作者要求新建章节、创作新一章或当前没有正文目标而要求写作时，调用 propose_chapter_creation，自行拟定章节标题，参考作者 @ 引用的卷和资料确定所属卷与内容；volumes 是冻结的卷目录，references 将输入中的引用标签绑定到真实卷或资料 ID，不要猜测或拼接 ID。已有卷用 volumeId；引用的是尚未建卷的分卷大纲时可用其标题填写 newVolumeTitle。仅新建时正文可为空，要求写作时提交完整正文；等待作者确认后才创建。续写或修改当前已有正文使用 propose_document_change。不要只在聊天里给出标题或正文代替候选。' : ''}
-${canCreateOutlines(input) ? '当前是故事大纲与时间线规划。参考基本信息与已有大纲，区分未来规划和已发生事实。用户要求生成、创建或撰写故事总纲时，调用 propose_master_outline，提交完整总纲，涵盖故事起点、主线推进、人物弧线、主要转折、高潮与结局；没有选中文档、尚无总纲或当前选中的是事件时也能创建总纲，不需要先建正文。用户要求修改当前选中的已有总纲或事件时，调用 propose_document_change，仅修改当前目标。用户要求修改其他已有总纲时，提示先选中该总纲，不要新建副本代替修改。用户要求创建大纲事件、规划时间线、拆分总纲或创建章纲时，调用 propose_chapter_outlines，items 按故事实际发生顺序给出每个大事件的 title、content 完整大纲，可填写 storyTime 和 summary。一个事件可以跨多个章节，不要默认按一章一个事件拆分。不能用文字回答代替创建候选，也不要把所有事件塞进当前总纲；等待作者确认后才保存总纲或添加事件。没有选中文档时也能创建事件。不要创建或撰写小说正文。用户只讨论时直接回答。' : ''}
+${canCreateOutlines(input) ? '当前是故事大纲与时间线规划。参考基本信息与已有大纲，区分未来规划和已发生事实。用户要求生成、创建或撰写故事总纲时，调用 propose_master_outline，提交完整总纲，涵盖故事起点、主线推进、人物弧线、主要转折、高潮与结局；没有选中文档、尚无总纲或当前选中的是事件时也能创建总纲，不需要先建正文。用户要求修改当前选中的已有总纲或事件时，调用 propose_document_change，仅修改当前目标。用户要求修改其他已有总纲时，提示先选中该总纲，不要新建副本代替修改。用户要求创建大纲事件、规划时间线、拆分总纲为事件时，调用 propose_chapter_outlines，items 按故事实际发生顺序给出每个大事件的 title、content 完整大纲，可填写 storyTime 和 summary。一个事件可以跨多个章节，不要默认按一章一个事件拆分。不能用文字回答代替创建候选，也不要把所有事件塞进当前总纲；等待作者确认后才保存总纲或添加事件。没有选中文档时也能创建事件。不要创建或撰写小说正文。用户要求批量创建单章章纲时，引导使用大纲页的“AI 拆分章纲”，由分章规划工作流生成独立章纲，不要将章纲保存为故事事件。用户只讨论时直接回答。' : ''}
 ${input.purpose === 'write' || input.purpose === 'rewrite' ? '提交正文候选前，核对场景先后顺序、人物实际已知信息和时间表述的一致性；不可把作者设定当成人物已经验证的知识。除非作者明确要求，正文候选不要重复章节标题，也不要包裹代码块。' : ''}
 ${input.skillVersionId ? `本次明确指定的 Skill 版本为 ${input.skillVersionId}，请先加载该版本。\n` : ''}
 可用 Skill 目录（JSON 数据）：

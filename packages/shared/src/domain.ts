@@ -9,6 +9,7 @@ export const documentKindSchema = z.enum([
   'chapter',
   'master_outline',
   'chapter_outline',
+  'chapter_plan',
   'character',
   'story_premise',
   'worldbuilding',
@@ -113,6 +114,7 @@ export const documentSchema = z
     kind: documentKindSchema,
     chapterId: idSchema.nullable(),
     chapterIds: z.array(idSchema).optional(),
+    parentOutlineId: idSchema.nullable().optional(),
     storyTime: z.string().max(16000).optional(),
     summary: z.string().max(4000).optional(),
     archived: z.boolean().optional(),
@@ -121,10 +123,14 @@ export const documentSchema = z
     currentVersionId: idSchema,
     deletedAt: timestampSchema.nullable(),
   })
-  .refine((document) => document.kind === 'chapter_outline' || document.chapterId === null, {
-    message: '只有章纲可以关联正文',
-    path: ['chapterId'],
-  });
+  .refine(
+    (document) =>
+      ['chapter_outline', 'chapter_plan'].includes(document.kind) || document.chapterId === null,
+    {
+      message: '只有章纲可以关联正文',
+      path: ['chapterId'],
+    },
+  );
 export const saveDocumentSchema = z.strictObject({
   baseVersionId: idSchema,
   content: z.string(),
