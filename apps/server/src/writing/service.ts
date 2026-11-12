@@ -300,7 +300,8 @@ export class WritingService {
           modelId: provider.config.modelId,
           systemPrompt: '连接检查。只回答 OK。',
           messages: [{ role: 'user', content: 'OK', timestamp: 0 }],
-          parameters: { maxTokens: Math.min(16, provider.config.connection.maxOutputTokens) },
+          // Some providers spend completion tokens before emitting the short visible answer.
+          parameters: { maxTokens: Math.min(256, provider.config.connection.maxOutputTokens) },
           toolDefinitions: [],
         },
         recorder: new MemoryLoopRecorder(),

@@ -271,6 +271,36 @@ it.each(['default', 'profile'])(
   },
 );
 
+it.each([128, 1024])(
+  'checks connectivity with enough completion budget within the provider limit %s',
+  async (maxOutputTokens) => {
+    const f = await fixture(undefined, false);
+    const provider = f.writing.providers.save(
+      {
+        ...f.provider.config,
+        connection: { ...f.provider.config.connection, maxOutputTokens },
+      },
+      f.provider.id,
+      f.provider.revision,
+    );
+    vi.spyOn(f.writing.providers, 'adapter').mockReturnValue({
+      id: 'connection-check-budget-test',
+      async *stream(request) {
+        const budget =
+          typeof request.parameters.maxTokens === 'number' ? request.parameters.maxTokens : 0;
+        expect(budget).toBeLessThanOrEqual(maxOutputTokens);
+        expect(budget).toBeLessThanOrEqual(256);
+        const response = answer('OK');
+        if (response.type === 'response' && budget < 64) response.response.stop = 'truncated';
+        yield response;
+      },
+    });
+    const check = await f.writing.checkProvider(provider.id);
+    expect(check.status).toBe('completed');
+    expect(check.stopReason).toBe('complete');
+  },
+);
+
 it('prevents deleting a provider during its connection check', async () => {
   const f = await fixture(undefined, false);
   let release: () => void = () => {};
