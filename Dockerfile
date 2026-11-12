@@ -13,6 +13,7 @@ RUN pnpm install --offline --frozen-lockfile \
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/.data
 WORKDIR /app
+COPY LICENSE ./LICENSE
 COPY --from=build /out/apps/server/node_modules ./apps/server/node_modules
 COPY --from=build /out/apps/server/package.json ./apps/server/package.json
 COPY --from=build /out/apps/server/dist ./apps/server/dist

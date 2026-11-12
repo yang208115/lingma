@@ -116,3 +116,7 @@ pnpm test:e2e
 - 真实模型的文学质量、延迟和费用取决于所配置的服务，本地模拟测试不代表实际模型表现。
 
 其余待办及验证缺口见[待办与限制](docs/待办与限制.md)。
+
+## 许可证
+
+本项目采用 **GNU General Public License v3.0（GPL-3.0-only）**，完整条款见 [LICENSE](LICENSE)。许可证原文来自 [GNU 官方网站](https://www.gnu.org/licenses/gpl-3.0.txt)。
