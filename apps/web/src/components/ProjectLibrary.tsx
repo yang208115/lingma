@@ -1,5 +1,6 @@
 import type { Project } from '@lingma/shared';
 import { useState } from 'react';
+import { ShioriIllustration } from './Shiori.js';
 export function ProjectLibrary({
   projects,
   deletedProjects,
@@ -23,30 +24,39 @@ export function ProjectLibrary({
   return (
     <main
       aria-label="作品管理"
-      className={`welcome ${projects.length || deletedProjects.length ? 'project-management' : ''}`}
+      className={`welcome library-page ${projects.length || deletedProjects.length ? 'project-management' : ''}`}
     >
-      <p className="eyebrow">
-        {projects.length || deletedProjects.length ? '你的创作书架' : '把故事留在这里'}
-      </p>
-      <h1>
-        {projects.length || deletedProjects.length ? (
-          '作品管理'
-        ) : (
-          <>
-            从一页空白，
-            <br />
-            到一个完整的世界。
-          </>
-        )}
-      </h1>
-      <p className="muted">
-        {projects.length || deletedProjects.length
-          ? '集中管理作品，删除后的作品可在回收站恢复。'
-          : '管理卷章、整理人物与大纲。每次保存都留下一个可找回的版本。'}
-      </p>
-      <button type="button" className="primary" onClick={onCreate}>
-        {projects.length || deletedProjects.length ? '新建作品' : '创建第一部作品'}
-      </button>
+      <header className="library-intro">
+        <div>
+          <p className="eyebrow">欢迎回来，作者。</p>
+          <h1>
+            {projects.length || deletedProjects.length ? (
+              '作品管理'
+            ) : (
+              <>
+                从一页空白，
+                <br />
+                到一个完整的世界。
+              </>
+            )}
+          </h1>
+          <p className="muted">
+            {projects.length || deletedProjects.length
+              ? '书签还夹在上次的那一页。选一部作品，继续你的故事。'
+              : '我是栞，替你整理故事的见习管理员。从一个人物、一段灵感开始，也很好。'}
+          </p>
+          <button type="button" className="primary" onClick={onCreate}>
+            {projects.length || deletedProjects.length ? '新建作品' : '创建第一部作品'}
+          </button>
+        </div>
+        <figure className="library-companion">
+          <ShioriIllustration />
+          <figcaption>
+            这一页，交给你决定。
+            <span>栞 · 页间见习管理员</span>
+          </figcaption>
+        </figure>
+      </header>
       <div className="project-list-heading">
         <h2>{showTrash ? '作品回收站' : '我的作品'}</h2>
         <button type="button" aria-pressed={showTrash} onClick={() => setShowTrash(!showTrash)}>

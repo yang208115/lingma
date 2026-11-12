@@ -1,0 +1,164 @@
+.shiori-avatar {
+  --shiori-avatar-size: 36px;
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: var(--shiori-avatar-size);
+  height: var(--shiori-avatar-size);
+  overflow: hidden;
+  border: 1px solid #8ec7e833;
+  border-radius: 50%;
+  background: var(--selected);
+  vertical-align: middle;
+}
+
+.shiori-avatar-small {
+  --shiori-avatar-size: 28px;
+}
+
+.shiori-avatar-large {
+  --shiori-avatar-size: 64px;
+}
+
+.shiori-avatar img {
+  position: absolute;
+  top: -12%;
+  left: 50%;
+  width: 330%;
+  max-width: none;
+  height: auto;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.welcome.library-page {
+  width: min(1050px, 100%);
+  padding: 40px 32px;
+  margin: 0 auto;
+}
+
+.library-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  align-items: center;
+  gap: 32px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+
+.library-intro h1 {
+  font-size: clamp(30px, 3vw, 44px);
+}
+
+.project-management .library-intro h1 {
+  font-size: 32px;
+}
+
+.library-intro .muted {
+  max-width: 520px;
+  font-size: 14px;
+}
+
+.library-companion {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  background: radial-gradient(ellipse at 50% 45%, #8ec7e80d, transparent 70%);
+}
+
+.shiori-illustration {
+  display: block;
+  width: 140px;
+  height: 210px;
+  object-fit: contain;
+}
+
+.project-management .shiori-illustration {
+  width: 108px;
+  height: 162px;
+}
+
+.library-companion figcaption {
+  font-size: 12px;
+  color: var(--text);
+  text-align: center;
+}
+
+.library-companion figcaption span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.sidebar-companion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+  padding: 16px 4px 0;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-companion > div {
+  min-width: 0;
+}
+
+.sidebar-companion > div > span {
+  display: block;
+  font-size: 12px;
+}
+
+.sidebar-companion small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.nav-collapsed .sidebar-companion {
+  display: none;
+}
+
+.chat-empty-companion {
+  margin-bottom: 20px;
+}
+
+.story-guide-companion {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.story-guide-speaker.is-thinking .shiori-avatar {
+  border-color: var(--accent);
+}
+
+@media (max-width: 600px) {
+  .welcome.library-page {
+    padding: 24px 20px;
+  }
+
+  .library-intro {
+    grid-template-columns: minmax(0, 1fr) 80px;
+    gap: 12px;
+  }
+
+  .library-intro h1,
+  .project-management .library-intro h1 {
+    font-size: 27px;
+  }
+
+  .library-companion .shiori-illustration {
+    width: 80px;
+    height: 120px;
+  }
+
+  .library-companion figcaption {
+    display: none;
+  }
+}

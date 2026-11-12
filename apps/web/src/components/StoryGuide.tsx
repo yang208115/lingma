@@ -8,9 +8,10 @@ import {
   hasElementContent,
   type ProviderConfig,
 } from '@lingma/shared';
-import { ArrowUp, BookOpen, LoaderCircle, MessageCircle, RotateCcw, Sparkles } from 'lucide-react';
+import { ArrowUp, BookOpen, LoaderCircle, MessageCircle, RotateCcw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { MarkdownContent } from './MarkdownContent.js';
+import { ShioriAvatar } from './Shiori.js';
 
 export function StoryGuide({
   projectId,
@@ -92,9 +93,10 @@ export function StoryGuide({
       <section className="story-guide-conversation" aria-label="故事引导对话">
         <div className="story-guide-messages">
           <div className="story-guide-intro">
-            <span className="story-guide-icon">
-              <Sparkles size={24} aria-hidden="true" />
-            </span>
+            <div className="story-guide-companion">
+              <ShioriAvatar size="large" />
+              <span>栞 · 你的创作搭档</span>
+            </div>
             <p className="eyebrow">从一个想法，慢慢聊成一个故事</p>
             <h2>{filled.length ? '接着聊聊你的故事' : '你想写一个怎样的故事？'}</h2>
             <p>简单说说人物、世界，或者脑海里的一个片段。不用一次想完整，我们一起慢慢补全。</p>
@@ -114,7 +116,7 @@ export function StoryGuide({
                 <span
                   className={`story-guide-speaker${['queued', 'running'].includes(job.status) ? ' is-thinking' : ''}`}
                 >
-                  <Sparkles size={15} aria-hidden="true" /> 创作搭档
+                  <ShioriAvatar size="small" /> 栞 · 创作搭档
                 </span>
                 {job.guidance && <MarkdownContent text={job.guidance.reply} />}
                 {job.candidates.filter((candidate) => candidate.status === 'pending').length >

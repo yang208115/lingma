@@ -12,6 +12,7 @@ import {
   useSearchParams,
 } from 'react-router';
 import { api } from './api.js';
+import { ShioriAvatar } from './components/Shiori.js';
 import { ProjectWorkspaceProvider, useProjectWorkspace } from './project-context.js';
 import { RuntimeProvider, useRuntime } from './runtime.js';
 import { workflowApi } from './workflow-api.js';
@@ -261,6 +262,13 @@ function AppShell() {
               </NavLink>
             </div>
           </nav>
+          <div className="sidebar-companion">
+            <ShioriAvatar />
+            <div>
+              <span>栞在这里</span>
+              <small>陪你写到下一页。</small>
+            </div>
+          </div>
           <small className="instance-label">本机工作区</small>
         </aside>
         <div className="page-content">

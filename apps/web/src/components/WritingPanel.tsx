@@ -53,6 +53,7 @@ import { ExecutionModeMenu } from './ExecutionModeMenu.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { OutlineCreationCard } from './OutlineCreationCard.js';
 import { ProposalDiagnostics, RunDiagnostics } from './RunDiagnostics.js';
+import { ShioriAvatar } from './Shiori.js';
 import { referenceToken, WritingMentions } from './WritingMentions.js';
 
 const active = (run: RunSummary) => ['queued', 'running', 'cancelling'].includes(run.status);
@@ -1174,10 +1175,10 @@ export function WritingPanel({
       )}
       {!run && (
         <div className="chat-empty">
-          <span className="chat-empty-icon">
-            <Sparkles size={26} strokeWidth={1.4} aria-hidden="true" />
-          </span>
-          <span className="chat-empty-kicker">你的创作搭档</span>
+          <div className="chat-empty-companion">
+            <ShioriAvatar size="large" />
+          </div>
+          <span className="chat-empty-kicker">栞 · 你的创作搭档</span>
           <h3>{outlineMode ? '一起理清故事的走向。' : '这一章，你想怎么写？'}</h3>
           <p role="status">
             {busy
@@ -1203,7 +1204,7 @@ export function WritingPanel({
     <section className="writing-panel" aria-label={outlineMode ? 'AI 大纲规划' : 'AI 写作'}>
       <header className="chat-header">
         <div className="chat-title">
-          <Sparkles size={17} strokeWidth={1.6} aria-hidden="true" />
+          <ShioriAvatar size="small" />
           <div>
             <h2>{outlineMode ? '大纲助手' : '写作助手'}</h2>
             {sessionTitle && (
