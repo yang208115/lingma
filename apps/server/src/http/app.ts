@@ -21,6 +21,7 @@ type Environment = { Variables: { requestId: string } };
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 export function createApp(options: {
+  publicOrigin?: string | undefined;
   ready: () => boolean;
   webDistDir: string;
   logger: Logger;
@@ -53,18 +54,25 @@ export function createApp(options: {
     } catch {
       throw new AppError('FORBIDDEN', '无效的 Host', 403);
     }
-    if (!loopback.has(hostname)) throw new AppError('FORBIDDEN', '仅允许本机 Host', 403);
+    const publicHost = options.publicOrigin ? new URL(options.publicOrigin).host : undefined;
+    const isLocal = loopback.has(hostname);
+    if (!isLocal && host !== publicHost) throw new AppError('FORBIDDEN', '不允许的 Host', 403);
     const origin = context.req.header('origin');
     if (origin) {
-      const allowed = new Set([
-        `http://${host}`,
-        `https://${host}`,
-        'http://127.0.0.1:5173',
-        'http://localhost:5173',
-      ]);
+      const allowed = new Set(
+        isLocal
+          ? [`http://${host}`, `https://${host}`, 'http://127.0.0.1:5173', 'http://localhost:5173']
+          : [options.publicOrigin],
+      );
       if (!allowed.has(origin)) throw new AppError('FORBIDDEN', '不允许的请求来源', 403);
     }
-    if (context.req.header('sec-fetch-site') === 'cross-site')
+    // External links are cross-site document navigations; API and embedded requests stay blocked.
+    const isPageNavigation =
+      ['GET', 'HEAD'].includes(context.req.method) &&
+      context.req.header('sec-fetch-mode') === 'navigate' &&
+      context.req.header('sec-fetch-dest') === 'document' &&
+      !context.req.path.startsWith('/api/');
+    if (context.req.header('sec-fetch-site') === 'cross-site' && !isPageNavigation)
       throw new AppError('FORBIDDEN', '不允许跨站访问', 403);
     await next();
   });

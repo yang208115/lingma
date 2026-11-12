@@ -66,6 +66,22 @@ describe('configuration and lifecycle', () => {
       reopened.db.connection.prepare('SELECT count(*) AS count FROM schema_migrations').get(),
     ).toEqual({ count: loadMigrations().length });
   });
+  it('requires an exact HTTPS origin for public listening', () => {
+    const publicOrigin = 'https://novel.example.com';
+    expect(loadConfig({ HOST: '0.0.0.0', PUBLIC_ORIGIN: publicOrigin })).toMatchObject({
+      host: '0.0.0.0',
+      publicOrigin,
+    });
+    for (const origin of [
+      'invalid',
+      'http://novel.example.com',
+      'https://novel.example.com/',
+      'https://user:pass@novel.example.com',
+      'https://novel.example.com/path',
+      'https://novel.example.com?query=1',
+    ])
+      expect(() => loadConfig({ PUBLIC_ORIGIN: origin })).toThrow('配置无效');
+  });
   it('refuses a second instance without disturbing the first', async () => {
     const { config, instance } = await runtime();
     await expect(openRuntime(config)).rejects.toThrow('已有实例占用');
@@ -556,5 +572,78 @@ describe('HTTP and redaction', () => {
       ...{ authorization: 'secret', body: 'private manuscript', apiKey: 'secret' },
     });
     expect(lines.join('')).not.toMatch(/secret|private manuscript|authorization|apiKey/);
+  });
+  it('allows external page links but rejects cross-site API, embedded and mutating requests', async () => {
+    const config = await fixture();
+    const web = resolve(config.dataDir, '..');
+    await writeFile(resolve(web, 'index.html'), '<html lang="zh-CN">灵码导航测试</html>');
+    const origin = 'https://novel.example.com';
+    const app = createApp({
+      publicOrigin: origin,
+      ready: () => true,
+      webDistDir: web,
+      logger: createLogger(() => {}),
+    });
+    const headers = {
+      'Sec-Fetch-Site': 'cross-site',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Dest': 'document',
+      Accept: 'text/html',
+      Referer: 'https://external.example/',
+    };
+    for (const path of ['/', '/projects/example']) {
+      const response = await app.request(`${origin}${path}`, { headers });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('灵码导航测试');
+    }
+    expect((await app.request(`${origin}/`, { method: 'HEAD', headers })).status).toBe(200);
+    expect((await app.request(`${origin}/api/v1/health`, { headers })).status).toBe(403);
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      expect((await app.request(`${origin}/`, { method, headers })).status).toBe(403);
+    }
+    for (const overrides of [
+      { 'Sec-Fetch-Dest': 'iframe' },
+      { 'Sec-Fetch-Mode': 'cors' },
+      { Origin: 'https://external.example' },
+    ]) {
+      expect(
+        (await app.request(`${origin}/`, { headers: { ...headers, ...overrides } })).status,
+      ).toBe(403);
+    }
+  });
+  it('allows only the configured public host and origin while preserving cross-site protection', async () => {
+    const config = await fixture();
+    const publicOrigin = 'https://novel.example.com';
+    const app = createApp({
+      publicOrigin,
+      ready: () => true,
+      webDistDir: config.webDistDir,
+      logger: createLogger(() => {}),
+    });
+    const endpoint = `${publicOrigin}/api/v1/health`;
+    expect((await app.request(endpoint)).status).toBe(200);
+    expect(
+      (await app.request(endpoint, { method: 'POST', headers: { Origin: publicOrigin } })).status,
+    ).toBe(404);
+    for (const origin of [
+      'https://evil.example',
+      'http://novel.example.com',
+      'http://localhost:5173',
+      'null',
+    ]) {
+      expect((await app.request(endpoint, { headers: { Origin: origin } })).status).toBe(403);
+    }
+    expect(
+      (await app.request(endpoint, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status,
+    ).toBe(403);
+    expect((await app.request('https://novel.example.com:8443/api/v1/health')).status).toBe(403);
+    expect(
+      (
+        await app.request('https://evil.example/api/v1/health', {
+          headers: { 'X-Forwarded-Host': 'novel.example.com', 'X-Forwarded-Proto': 'https' },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await app.request('http://localhost/ready')).status).toBe(200);
   });
 });

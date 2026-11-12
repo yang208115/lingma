@@ -1,0 +1,30 @@
+name: lingma
+services:
+  lingma:
+    build:
+      context: ..
+    image: lingma:local
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the HTTPS site origin}
+    volumes:
+      - ./data:/app/.data
+    networks:
+      proxy:
+        aliases:
+          - lingma
+      outbound:
+        gw_priority: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  outbound:
+    driver: bridge
+  proxy:
+    external: true
+    name: proxy-stack_control

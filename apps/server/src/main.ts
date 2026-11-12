@@ -34,6 +34,7 @@ async function main(): Promise<void> {
   });
   runtime.onClose(() => writing.close());
   const app = createApp({
+    publicOrigin: config.publicOrigin,
     writing,
     skills,
     ready: runtime.ready,
