@@ -4218,13 +4218,178 @@ summary:focus-visible {
   background: var(--selected);
 }
 .project-navigation-picker {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 8px 0;
+  margin: 8px 0 12px;
 }
-.project-navigation-picker select {
+.project-navigation-trigger {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   width: 100%;
+  padding: 10px;
+  text-align: left;
+  border-radius: 9px;
+  background: var(--surface);
+}
+.project-navigation-trigger > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.project-navigation-trigger:hover,
+.project-navigation-trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--hover);
+}
+.project-navigation-current,
+.project-navigation-option-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.project-navigation-current strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+.project-navigation-current small,
+.project-navigation-option-copy small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.project-navigation-current small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-navigation-trigger > .project-navigation-chevron {
+  color: var(--muted);
+  transition: transform 150ms ease;
+}
+.project-navigation-trigger[aria-expanded="true"] > .project-navigation-chevron {
+  transform: rotate(180deg);
+}
+.project-navigation-panel {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow:
+    0 16px 48px #0006,
+    0 3px 10px #0003;
+}
+.project-navigation-panel:popover-open {
+  display: flex;
+  flex-direction: column;
+}
+.project-navigation-heading {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.project-navigation-heading small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+.project-navigation-search {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--sidebar);
+  color: var(--muted);
+}
+.project-navigation-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.project-navigation-search input {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+}
+.project-navigation-search input::placeholder {
+  color: var(--muted);
+}
+.project-navigation-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.project-navigation-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 2px 0;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+}
+.project-navigation-option > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.project-navigation-option.is-active {
+  background: var(--hover);
+  border-color: var(--border);
+}
+.project-navigation-option[aria-selected="true"] {
+  background: var(--selected);
+}
+.project-navigation-option[aria-selected="true"] > svg,
+.project-navigation-option[aria-selected="true"] strong {
+  color: var(--accent);
+}
+.project-navigation-option-copy strong {
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.project-navigation-empty {
+  margin: 0;
+  padding: 24px 8px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+.project-navigation-manage {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 10px 8px 4px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
 }
 .nav-collapsed .navigation-group > p,
 .nav-collapsed .navigation-group a span,

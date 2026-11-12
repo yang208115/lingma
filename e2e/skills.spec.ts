@@ -290,7 +290,9 @@ test('general and project Skill pages import separately, switch projects and pre
   await page.reload();
   await expect(list.getByRole('button', { name: `${name} 本地副本`, exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('project-skills.png'), fullPage: true });
-  await page.getByLabel('当前作品', { exact: true }).selectOption(second.id);
+  await page.getByRole('button', { name: '当前作品', exact: true }).click();
+  await page.getByRole('combobox', { name: '搜索作品' }).fill(second.title);
+  await page.getByRole('option', { name: `${second.title} · 短篇`, exact: true }).click();
   await expect(page).toHaveURL(`/projects/${second.id}/skills`);
   await expect(list.getByRole('button', { name: `${name} 本地副本`, exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: '通用 Skill', exact: true }).click();

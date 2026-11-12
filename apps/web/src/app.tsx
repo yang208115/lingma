@@ -12,6 +12,7 @@ import {
   useSearchParams,
 } from 'react-router';
 import { api } from './api.js';
+import { ProjectNavigationPicker } from './components/ProjectNavigationPicker.js';
 import { ShioriAvatar } from './components/Shiori.js';
 import { ProjectWorkspaceProvider, useProjectWorkspace } from './project-context.js';
 import { RuntimeProvider, useRuntime } from './runtime.js';
@@ -112,7 +113,7 @@ function AppShell() {
       }
       if (event.key === 'Tab') {
         const nodes = Array.from(
-          sidebar?.querySelectorAll<HTMLElement>('a, button, select') ?? [],
+          sidebar?.querySelectorAll<HTMLElement>('a, button, select, input') ?? [],
         ).filter((node) => node.getClientRects().length);
         const first = nodes[0];
         const last = nodes.at(-1);
@@ -190,35 +191,21 @@ function AppShell() {
             </div>
             <div className="navigation-group">
               <p>当前作品</p>
-              <label className="project-navigation-picker">
-                选择作品
-                <select
-                  aria-label="当前作品"
-                  value={current?.id ?? ''}
-                  onChange={(event) => {
-                    const id = event.target.value;
-                    if (!id) {
-                      navigate('/projects');
-                      return;
-                    }
-                    if (
-                      /^\/projects\//.test(location.pathname) ||
-                      location.pathname === '/projects'
-                    )
-                      navigate(
-                        `/projects/${id}/${location.pathname.endsWith('/skills') ? 'skills' : 'writing'}`,
-                      );
-                    else navigate(`${location.pathname}?${new URLSearchParams({ project: id })}`);
-                  }}
-                >
-                  <option value="">选择作品</option>
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ProjectNavigationPicker
+                projects={projects}
+                value={current?.id ?? ''}
+                onChange={(id) => {
+                  if (!id) {
+                    navigate('/projects');
+                    return;
+                  }
+                  if (/^\/projects\//.test(location.pathname) || location.pathname === '/projects')
+                    navigate(
+                      `/projects/${id}/${location.pathname.endsWith('/skills') ? 'skills' : 'writing'}`,
+                    );
+                  else navigate(`${location.pathname}?${new URLSearchParams({ project: id })}`);
+                }}
+              />
               {current ? (
                 <>
                   <NavLink aria-label="写作" to={projectLink('writing')}>

@@ -29,12 +29,11 @@ for (const view of ['projects', 'writing'] as const) {
     await expect.poll(() => failedReads).toBeGreaterThanOrEqual(3);
     await expect(page.getByRole('alert')).toHaveCount(0);
     unavailable = false;
+    await page.getByRole('button', { name: '当前作品', exact: true }).click();
     await expect(
-      page.getByLabel('当前作品', { exact: true }).getByRole('option', {
-        name: project.title,
-        exact: true,
-      }),
-    ).toHaveCount(1);
+      page.getByRole('option', { name: `${project.title} · 短篇`, exact: true }),
+    ).toBeVisible();
+    await page.getByRole('combobox', { name: '搜索作品' }).press('Escape');
     if (view === 'projects')
       await expect(page.getByRole('article', { name: project.title, exact: true })).toBeVisible();
     else await expect(page.getByLabel('文档正文', { exact: true })).toBeVisible();

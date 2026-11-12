@@ -37,6 +37,64 @@ async function fixture(request: APIRequestContext, format: 'short' | 'long' = 's
 }
 const nav = (page: Page) => page.getByRole('navigation', { name: '页面导航' });
 
+test('project picker searches titles, switches with the keyboard and restores focus', async ({
+  page,
+  request,
+}) => {
+  const first = await fixture(request);
+  const second = await fixture(request);
+  await page.goto(`/projects/${first.project.id}/skills`);
+  const trigger = page.getByRole('button', { name: '当前作品', exact: true });
+  await trigger.click();
+  const search = page.getByRole('combobox', { name: '搜索作品' });
+  await expect(search).toBeFocused();
+  await expect(page.getByRole('option', { selected: true })).toHaveAccessibleName(
+    `${first.project.title} · 短篇`,
+  );
+  await search.fill('没有这部作品');
+  await expect(page.getByRole('dialog', { name: '切换作品' }).getByRole('status')).toHaveText(
+    '没有找到匹配的作品',
+  );
+  await search.fill(second.project.title);
+  await expect(page.getByRole('option')).toHaveCount(1);
+  await search.press('ArrowDown');
+  await search.press('Enter');
+  await expect(page).toHaveURL(`/projects/${second.project.id}/skills`);
+  await expect(trigger).toContainText(second.project.title);
+  await expect(page.getByRole('dialog', { name: '切换作品' })).toHaveCount(0);
+  await trigger.press('ArrowDown');
+  await expect(search).toHaveValue('');
+  await search.press('Escape');
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.getByRole('heading', { name: '项目 Skill', exact: true }).click();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('mobile project picker fits the viewport and Escape leaves navigation open', async ({
+  page,
+  request,
+}) => {
+  const { project } = await fixture(request);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/projects/${project.id}/skills`);
+  const navigation = page.getByRole('button', { name: '☰ 导航' });
+  await navigation.click();
+  await page.getByRole('button', { name: '当前作品', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: '切换作品' });
+  await expect(panel).toBeVisible();
+  const box = await panel.boundingBox();
+  if (!box) throw new Error('作品选择面板不可见');
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  expect(box.y + box.height).toBeLessThanOrEqual(844);
+  await page.getByRole('combobox', { name: '搜索作品' }).press('Escape');
+  await expect(panel).toHaveCount(0);
+  await expect(navigation).toHaveAttribute('aria-expanded', 'true');
+  await page.getByRole('button', { name: '当前作品', exact: true }).press('Escape');
+  await expect(navigation).toHaveAttribute('aria-expanded', 'false');
+});
+
 test('removes the standalone collaboration entry and redirects old project links to writing', async ({
   page,
   request,
