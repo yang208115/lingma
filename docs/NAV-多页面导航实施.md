@@ -4,18 +4,18 @@
 
 ## 页面入口
 
-| 页面 | 地址 |
-| --- | --- |
-| 作品管理 | `/projects` |
-| 写作 | `/projects/:projectId/writing?document=:documentId` |
-| 大纲 | `/projects/:projectId/outline?document=:documentId` |
-| 基本信息 | `/projects/:projectId/information` |
-| 通用 Skill | `/skills` |
-| 项目 Skill | `/projects/:projectId/skills` |
-| Agent 角色库 | `/agents` |
-| 工作流模板 | `/workflow-templates` |
-| 模型设置 | `/settings/models` |
-| Agent 提示词 | `/settings/agent-prompt` |
+| 页面         | 地址                                                |
+| ------------ | --------------------------------------------------- |
+| 作品管理     | `/projects`                                         |
+| 写作         | `/projects/:projectId/writing?document=:documentId` |
+| 大纲         | `/projects/:projectId/outline?document=:documentId` |
+| 基本信息     | `/projects/:projectId/information`                  |
+| 通用 Skill   | `/skills`                                           |
+| 项目 Skill   | `/projects/:projectId/skills`                       |
+| Agent 角色库 | `/agents`                                           |
+| 工作流模板   | `/workflow-templates`                               |
+| 模型设置     | `/settings/models`                                  |
+| Agent 提示词 | `/settings/agent-prompt`                            |
 
 左侧分为作品管理、当前作品、创作工具与设置四组，当前作品组提供选择器。桌面可收起侧栏，窄屏用抽屉导航，支持 Escape 关闭及焦点约束。当前页面高亮并更新浏览器标题。写作区仅展示正文和 AI 助手，章节切换收进编辑器工具栏；新建、导入、卷章管理和导出位于“文档操作”菜单。总纲、章纲及其目录在独立大纲页面管理。助手宽度拖动按实际两栏宽度计算。此调整按用户要求未运行测试或构建。
 
