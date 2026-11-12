@@ -27,4 +27,4 @@ networks:
     driver: bridge
   proxy:
     external: true
-    name: proxy-stack_control
+    name: ${PROXY_NETWORK:-lingma_proxy}
